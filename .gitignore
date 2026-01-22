@@ -1,0 +1,16 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+*.egg-info/
+
+# Unit test / coverage reports
+.pytest_cache/
+
+# Project specific
+/data
+/result
+/src/LF_linearsys.egg-info
+/.pytest_cache

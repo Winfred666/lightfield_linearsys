@@ -1,0 +1,35 @@
+# Configuration for Light Field Solver (ISTA)
+
+data:
+  data_dir: "data/processed"
+  output_dir: "result/solve_pair/ista"
+  # Optional path to a .pt file containing 'reconstruction' tensor to initialize x_global
+  init_global_x: null
+
+  # Memory consuming: using joint pair could joint solving multiple measurement together for better quality.
+  joint_pair_num: 1
+  
+  max_pairs: null  # Set to null or a large number for full run
+  threshold_A: 0.20 # Threshold for filtering zero rows in light field A
+  threshold_b: 1.0 # Threshold for filtering target b
+
+solver:
+  type: "ista" # Options: fista, ista
+  n_iter: 900
+  lambda_reg: 0.0 # L1 regularization weight, prevent extremely low ghost volumes.
+  lipchitz: 50.0 # Optional, default 1.0 if not specified
+
+# Optional: infer and fix provably-zero variables under x>=0 constraint.
+# When enabled, the solver runs on a reduced set of free variables.
+masking:
+  enabled: false
+  # Only A entries > threshold_A are considered positive contributions.
+  threshold_A: 0.0
+  # If false, masking inference is disabled (conservative) because A may have negatives.
+  assume_non_negative_A: true
+
+device: "cuda" # "cuda" or "cpu"
+
+# Optional: export mesh after each pair update.
+# If omitted, defaults to 0.5.
+mesh_iso: null
