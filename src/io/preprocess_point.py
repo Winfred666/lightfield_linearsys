@@ -275,12 +275,13 @@ def preprocess_points_optimized(
             A_batch = buf["A"]
             b_batch = buf["b"]
             
-            out_file = out_path / f"points_batch_{b_idx}.pt"
+            out_file = out_path / f"points_batch_{b_idx:04d}.pt"
             save_data = {
                 'A': A_batch,
                 'b': b_batch,
                 'coords': buf['coords'],
-                'batch_index': b_idx
+                'batch_index': b_idx,
+                'full_dims': (X_dim, Y_dim, Z_dim)
             }
             torch.save(save_data, out_file)
             logger.info(f"Saved {out_file} (A shape: {A_batch.shape}).")
@@ -296,7 +297,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir", default="data/processed", help="Directory with pair_*.h5")
     parser.add_argument("--output_dir", default=None, help="Output directory (default: derived from data_dir)")
-    parser.add_argument("--batch_size", type=int, default=10000, help="Points per output file")
+    parser.add_argument("--batch_size", type=int, default=30000, help="Points per output file")
     parser.add_argument("--batches_per_pass", type=int, default=1, help="Number of batches to process in one pass (depends on RAM)")
     parser.add_argument("--limit_batches", type=int, default=None, help="Limit number of batches for testing")
     parser.add_argument(
@@ -322,12 +323,9 @@ if __name__ == "__main__":
     
     if args.output_dir is None:
         # Infer from data_dir
-        if "processed_scale_" in args.data_dir:
-            # Extract suffix
-            suffix = args.data_dir.split("processed_scale_")[-1]
-            args.output_dir = f"data/points_scale_{suffix}"
-        else:
-            args.output_dir = "data/points"
+        # Use the last path component of data_dir as the suffix (handles trailing slashes)
+        suffix = Path(args.data_dir).expanduser().resolve().name
+        args.output_dir = f"data/points/{suffix}_{args.batch_size}"
 
     logger.info(f"Data Dir: {args.data_dir}")
     logger.info(f"Output Dir: {args.output_dir}")

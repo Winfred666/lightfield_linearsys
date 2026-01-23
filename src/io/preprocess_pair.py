@@ -4,6 +4,7 @@ import sys
 import os
 import h5py
 import numpy as np
+import torch.nn.functional as F
 import argparse
 
 # Ensure src is in path if running from root
@@ -53,33 +54,49 @@ def check_dimensions():
     print("-" * 20)
 
 
-def preprocess_dataset(output_dir="data/processed", scale_factor=8.0):
+def preprocess_dataset(output_dir, input_dir, img_dir, downsampling_rate, scale_factor=8.0):
     """
     Preprocesses the dataset:
-    1. Reads pairs.
-    2. Scales volume.
-    3. Crops to valid region.
-    4. Saves as Ax=b pair in separate HDF5 files.
+    1. Reads pairs from input_dir.
+    2. Scales volume by scale_factor * downsampling_rate.
+    3. Downsamples image by downsampling_rate.
+    4. Crops to valid region.
+    5. Saves as Ax=b pair in separate HDF5 files.
     """
-    print(f"Starting preprocessing with scale_factor={scale_factor}...")
+    print("Starting preprocessing...")
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Output directory: {output_dir}")
     
-    data_root = Path("data/raw")
-    vol_dir = data_root / "lightsheet_vol_6.9"
-    img_dir = data_root / "average_imgs"
+    input_dir = Path(input_dir)
+    img_dir = Path(img_dir)
     
-    # Range 1 to 121
-    for idx in range(1, 122):
+    # Find indices
+    vol_files = sorted(list(input_dir.glob("Interp_Vol_ID_*.pt")))
+    if not vol_files:
+         print(f"No volume files found in {input_dir}")
+         return
+
+    indices = []
+    for p in vol_files:
+        try:
+            # Name format: Interp_Vol_ID_{idx}.pt
+            idx_str = p.stem.split('_')[-1]
+            indices.append(int(idx_str))
+        except ValueError:
+            pass
+            
+    indices = sorted(indices)
+    print(f"Found {len(indices)} pairs. Indices: {indices[0]} to {indices[-1]}")
+    
+    for idx in indices:
         vol_name = f"Interp_Vol_ID_{idx}.pt"
         img_name = f"1scan ({idx}).tif"
         
-        vol_path = vol_dir / vol_name
+        vol_path = input_dir / vol_name
         img_path = img_dir / img_name
         
         if not vol_path.exists() or not img_path.exists():
@@ -97,20 +114,33 @@ def preprocess_dataset(output_dir="data/processed", scale_factor=8.0):
         # Move to device
         vol = vol.to(device)
         img = img.to(device)
+
+        # Downsample Image (b)
+        if downsampling_rate != 1.0:
+            # img is (Y, X). Need (1, 1, Y, X) for interpolate
+            img_in = img.unsqueeze(0).unsqueeze(0)
+            img_down = F.interpolate(img_in, scale_factor=downsampling_rate, mode='bilinear', align_corners=False)
+            img = img_down.squeeze(0).squeeze(0)
+        
+        # Calculate effective scale for Volume (A)
+        # We want to match the downsampled image space.
+        effective_vol_scale = scale_factor * downsampling_rate
         
         # Optimization: Crop Volume BEFORE scaling to save memory.
-        # We know we need final Y = 2048. Scale factor = 8.
-        # So we need input Y slice of 2048 / 8 = 256.
-        # Original Y = 600.
         
         # Dimensions check
         X_v_orig, Y_v_orig, Z_v_orig = vol.shape
-        Y_i_orig, X_i_orig = img.shape
+        Y_i_curr, X_i_curr = img.shape
         
         # Calculate target crop size in Low Res (Volume) domain for Y
-        # We want to match Image Y (2048) or Vol Scaled Y (4800). Min is 2048.
-        target_Y_highres = min(Y_i_orig, int(Y_v_orig * scale_factor))
-        target_Y_lowres = int(target_Y_highres / scale_factor)
+        # We target the downsampled image Y size.
+        # Image Y ~= Original Volume Y * effective_vol_scale.
+        target_Y_highres = min(Y_i_curr, int(Y_v_orig * effective_vol_scale))
+        
+        if effective_vol_scale > 0:
+            target_Y_lowres = int(target_Y_highres / effective_vol_scale)
+        else:
+            target_Y_lowres = Y_v_orig
         
         if target_Y_lowres < Y_v_orig:
             start_y_v = (Y_v_orig - target_Y_lowres) // 2
@@ -131,10 +161,12 @@ def preprocess_dataset(output_dir="data/processed", scale_factor=8.0):
                 vol_chunk = vol[:, :, z_start_in : z_end_in] 
                 
                 # Scale
-                vol_chunk_scaled = scale_volume(vol_chunk, scale_factor=scale_factor)
+                vol_chunk_scaled = scale_volume(vol_chunk, scale_factor=effective_vol_scale)
                 
-                # Crop output to target Z size (200)
-                target_z_chunk = 200
+                # Crop output to target Z size
+                # 25 original slices * effective_scale
+                target_z_chunk = int(25 * effective_vol_scale)
+                
                 vol_chunk_scaled = vol_chunk_scaled[:, :, :target_z_chunk]
                 
                 # Move to CPU immediately
@@ -151,12 +183,11 @@ def preprocess_dataset(output_dir="data/processed", scale_factor=8.0):
         X_v, Y_v, Z_v = vol_scaled.shape
         
         # Target Crop Size for X
-        # Image X: 2448. Vol Scaled X: 1192. Min is 1192.
-        target_X = min(X_v, X_i_orig)
+        target_X = min(X_v, X_i_curr)
         
         # Crop Image in X (width) to match Vol
-        if X_i_orig > target_X:
-            start_x_i = (X_i_orig - target_X) // 2
+        if X_i_curr > target_X:
+            start_x_i = (X_i_curr - target_X) // 2
             img_cropped = img[:, start_x_i : start_x_i + target_X]
         else:
             img_cropped = img
@@ -192,15 +223,11 @@ def preprocess_dataset(output_dir="data/processed", scale_factor=8.0):
         vol_cropped_cpu = vol_cropped # Already on CPU
         
         # Save to separate HDF5 file
-        # Using format pair_001.h5 for easier sorting/globbing, or just pair_1.h5 to match current scheme
-        # Let's stick to pair_{idx}.h5 to minimize friction
         h5_path = output_dir / f"pair_{idx}.h5"
         
         with h5py.File(h5_path, 'w') as f:
             # Chunking strategies:
-            # A: (X, Y, Z). We often read sub-regions in X,Y. Z is relatively small (200).
-            # We want to enable fast spatial crop reading.
-            # Chunk size: (32, 32, Z) seems reasonable for spatial locality.
+            # A: (X, Y, Z). We often read sub-regions in X,Y. Z is relatively small.
             chunks_A = (32, 32, vol_cropped_cpu.shape[2])
             chunks_b = (32, 32)
             
@@ -210,18 +237,57 @@ def preprocess_dataset(output_dir="data/processed", scale_factor=8.0):
         print(f"Saved {h5_path}. Time: {time.time()-t0:.2f}s")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Preprocess dataset with scaling.")
-    parser.add_argument("--scale_factor", type=float, default=8.0, help="Scaling factor for volume interpolation.")
-    parser.add_argument("--output_dir", type=str, default=None, help="Output directory. If not specified, defaults to data/processed_scale_{scale_factor}.")
-    args = parser.parse_args()
-    
-    # Logic for default output dir
-    if args.output_dir is None:
-        if args.scale_factor == 8.0:
-             # Keep backward compatibility for default scale
-             args.output_dir = "data/processed"
-        else:
-             args.output_dir = f"data/processed_scale_{args.scale_factor}"
+    parser = argparse.ArgumentParser(description="Preprocess paired volume/image data into per-index HDF5 files.")
+    parser.add_argument(
+        "--input-dir",
+        type=str,
+        default="data/raw/lightsheet_vol_6.9",
+        help="Directory containing Interp_Vol_ID_*.pt volumes.",
+    )
+    parser.add_argument(
+        "--img-dir",
+        type=str,
+        default="data/raw/average_imgs",
+        help="Directory containing 1scan (idx).tif images.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="data/processed",
+        help="Output directory for pair_{idx}.h5 files.",
+    )
+    parser.add_argument(
+        "--downsampling-rate",
+        type=float,
+        default=0.125,
+        help="Downsampling rate for the image; volume scaling uses scale_factor * downsampling_rate.",
+    )
+    parser.add_argument(
+        "--scale-factor",
+        type=float,
+        default=8.0,
+        help="Base scale factor applied to the volume before matching image space.",
+    )
+    parser.add_argument(
+        "--skip-dimension-check",
+        action="store_true",
+        help="Skip the initial dimension sanity check.",
+    )
 
-    # check_dimensions() 
-    preprocess_dataset(output_dir=args.output_dir, scale_factor=args.scale_factor)
+    args = parser.parse_args()
+
+    # Save into a subfolder of output_dir tagged by downsampling rate.
+    # Example: data/processed/ds0p125
+    ds_tag = f"ds{args.downsampling_rate:g}".replace(".", "p")
+    args.output_dir = str(Path(args.output_dir) / ds_tag)
+
+    if not args.skip_dimension_check:
+        check_dimensions()
+
+    preprocess_dataset(
+        output_dir=args.output_dir,
+        input_dir=args.input_dir,
+        img_dir=args.img_dir,
+        downsampling_rate=args.downsampling_rate,
+        scale_factor=args.scale_factor,
+    )

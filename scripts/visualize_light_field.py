@@ -2,8 +2,27 @@ import numpy as np
 import pyvista as pv
 import torch
 
+
+def _print_stats(name: str, a: np.ndarray) -> None:
+    a = np.asarray(a)
+    finite = np.isfinite(a)
+    if not np.any(finite):
+        print(f"{name}: no finite values (shape={a.shape}, dtype={a.dtype})")
+        return
+    af = a[finite]
+    # Cast to float64 for stable stats when data is float16/float32
+    af64 = af.astype(np.float64, copy=False)
+    print(
+        f"{name} stats (finite only): "
+        f"min={np.min(af64):.6g}, max={np.max(af64):.6g}, "
+        f"mean={np.mean(af64):.6g}, median={np.median(af64):.6g} "
+        f"(shape={a.shape}, dtype={a.dtype})"
+    )
+
 # Load volume data
-vol_np = torch.load("result/solve_pair/ista/20260122_0252/reconstruction.pt").cpu().numpy()
+vol_np = torch.load("result/solve_pair/ista/20260122_0934/reconstruction.pt")['reconstruction'].float().cpu().numpy()
+
+_print_stats("volume", vol_np)
 
 # Visualization parameters (assuming these are defined elsewhere)
 # z_step: Z-step in μm
@@ -45,12 +64,35 @@ grid.point_data["intensity"] = vol_transposed.ravel(order="F")
 pl = pv.Plotter(window_size=(1000, 800))
 pl.set_background("white")
 
+# ---- Rendering / legend range control ----
+# By default PyVista uses the scalar min/max, which can make the colorbar range huge.
+# Set an explicit range here (edit as desired).
+# Common choices:
+# - (0.0, 1.0) if your reconstruction is normalized
+# - (0.0, p99) using percentiles for robustness
+use_percentile_range = False
+if use_percentile_range:
+    finite = np.isfinite(vol_transposed)
+    if np.any(finite):
+        p1, p99 = np.percentile(vol_transposed[finite], [1, 99])
+        clim = (float(p1), float(p99))
+    else:
+        clim = (0.0, 1.0)
+else:
+    clim = (0.0, 0.005)
+
 # Add volume with sigmoid opacity for transparency
 pl.add_volume(
     grid,
     cmap="viridis",
     opacity="sigmoid",
-    scalar_bar_args={'title': 'Intensity'}
+    clim=clim,
+    scalar_bar_args={
+        'title': 'Intensity',
+        # Keep the legend readable when range is small.
+        'fmt': '%.3g',
+        'n_labels': 5,
+    },
 )
 
 # Add outline

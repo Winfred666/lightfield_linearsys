@@ -94,10 +94,10 @@ class BatchedFISTASolver:
                     # Recompute Ax for x (not y)
                     Ax = self.system.forward(x)
                     r = Ax - self.system.b
-                    fit = 0.5 * torch.sum(r**2) / B
-                    reg = self.lambda_reg * torch.norm(x, p=1) / B
-                    obj = fit + reg
-                    logger.info(f"Iter {k}: Mean Obj={obj:.6f}, Mean Fit={fit:.6f}")
+                    fit = 0.5 * torch.sum(r**2), 0
+                    reg = self.lambda_reg * torch.norm(x, p=1)
+                    max_obj = max(fit + reg)
+                    logger.info(f"Iter {k}: Max Obj={max_obj:.6f}, Max Fit={max(fit):.6f}")
                     
         total_time = time.time() - start_time
         logger.info(f"Solved {B} points in {total_time:.2f}s ({(total_time/B)*1000:.2f} ms/point)")

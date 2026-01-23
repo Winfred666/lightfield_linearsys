@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import h5py
 import matplotlib
 matplotlib.use('Agg') # Non-interactive backend
 import matplotlib.pyplot as plt
@@ -227,15 +228,24 @@ def visualize(
     # Load Data
     try:
         logger.info("Loading data... (this might take a while for large files)")
-        data = torch.load(file_path, map_location='cpu')
+        file_path_obj = Path(file_path)
         
-        if isinstance(data, dict):
-            vol = data.get('A')
-            img = data.get('b')
+        if file_path_obj.suffix == '.h5':
+            with h5py.File(file_path_obj, 'r') as f:
+                logger.info("Reading HDF5 datasets 'A' and 'b'...")
+                # Read into memory
+                vol = torch.from_numpy(f['A'][:])
+                img = torch.from_numpy(f['b'][:])
         else:
-            # Fallback if structure is different
-            vol = data[0]
-            img = data[1]
+            data = torch.load(file_path, map_location='cpu')
+            
+            if isinstance(data, dict):
+                vol = data.get('A')
+                img = data.get('b')
+            else:
+                # Fallback if structure is different
+                vol = data[0]
+                img = data[1]
             
         logger.info(f"Volume Shape: {vol.shape}, Type: {vol.dtype}")
         logger.info(f"Image Shape: {img.shape}, Type: {img.dtype}")
@@ -378,7 +388,7 @@ def visualize(
     if img_flat.size == 0:
         logger.warning("Target image is empty; skipping threshold previews.")
     else:
-        thresholds = [1.0, 1e-1, 1e-2, 8e-3, 5e-3, 2e-3, 1e-3]
+        thresholds = [1.0, 0.9, 0.7, 0.6, 0.4, 0.2, 0.1, 1e-2]
 
         img_min_raw = float(np.min(img_flat))
         img_max_raw = float(np.max(img_flat))
@@ -497,7 +507,7 @@ def visualize(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("file_path", nargs='?', default="data/processed/pair_1.pt", help="Path to the .pt file")
+    parser.add_argument("file_path", nargs='?', default="data/processed/ds0p125/pair_2.h5", help="Path to the .h5 or .pt file")
     parser.add_argument(
         "--norm",
         choices=["percentile", "minmax"],

@@ -212,8 +212,9 @@ def main():
 
             # visualize result after some joint pairs opt.
             if i > 0 and i % 10 == 0:
-                mesh_iso = float(cfg.get('mesh_iso', 0.5))
+                mesh_iso = cfg.get('mesh_iso', None)
                 if mesh_iso is not None:
+                    mesh_iso = float(mesh_iso)
                     solver._export_mesh(x_global, mesh_iso)
                 solver._export_volume_pt(x_global)
             # Cleanup

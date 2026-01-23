@@ -55,4 +55,17 @@ For each new module or behavior change:
 
 ## Notes
 
-- If instructions here conflict with `README.md`, treat `README.md` as authoritative and update this file to match.
+File Reading Strategy: Every `Read` tool call **MUST** verify `offset` and `limit` parameters. Default full-file reads are prohibited for non-trivial files. Parameter Requirements:
+
+| Param    | Requirement    | Description                   |
+| -------- | -------------- | ----------------------------- |
+| `offset` | **REQUIRED** | Start line number (0-indexed) |
+| `limit`  | **REQUIRED** | Max lines to read (Max 500)   |
+
+Long Code Reading Workflow
+
+1. **Recon**: Use `Grep` first to understand structure or locate keywords.
+2. **Surgical Read**: Use `offset` + `limit` to read only the relevant section.
+3. **Expand**: Adjust `offset` to read more context only if strictly necessary.
+
+Keep context precise and minimal. Violations will be blocked by the PreToolUse hook.

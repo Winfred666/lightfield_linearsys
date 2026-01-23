@@ -1,11 +1,13 @@
 import argparse
 import yaml
 import torch
+import torch.multiprocessing as mp
 from pathlib import Path
-import glob
 import logging
 import sys
 import os
+import time
+from datetime import datetime
 
 # Ensure src is in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -14,22 +16,139 @@ from src.core.point_system import PointLinearSystem
 from src.core.batched_fista import BatchedFISTASolver
 from src.core.batched_ista import BatchedISTASolver
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(processName)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Global variable for workers to access the shared tensor
+shared_x_global = None
 
 def load_config(config_path):
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
-def main(config_path):
-    cfg = load_config(config_path)
+def init_worker(x_global_tensor):
+    """Initialize worker process by setting the shared global volume."""
+    global shared_x_global
+    shared_x_global = x_global_tensor
+
+def process_file(args):
+    """Worker function to process a single points file."""
+    file_path, gpu_id, cfg = args
+    global shared_x_global
     
-    device = torch.device(cfg['device'] if torch.cuda.is_available() else 'cpu')
-    logger.info(f"Using device: {device}")
+    try:
+        # Assign device
+        if torch.cuda.is_available():
+            device = torch.device(f'cuda:{gpu_id}')
+        else:
+            device = torch.device('cpu')
+        logger.info(f"START {file_path.name} on {device}")
+
+        # Load data
+        data = torch.load(file_path, map_location='cpu')
+        
+        A_full = data['A']
+        b_full = data['b']
+        coords_full = data['coords'] # (N, 2)
+        batch_idx = data.get('batch_index', 0)
+        
+        total_points = A_full.shape[0]
+        # Solver batch size (sub-batch within the file to fit in GPU memory)
+        sub_batch_size = cfg['solver'].get('batch_size', total_points)
+        
+        num_sub_batches = (total_points + sub_batch_size - 1) // sub_batch_size
+        
+        # logger.info(f"Processing {file_path.name} on {device} ({num_sub_batches} sub-batches)")
+        
+        for i in range(num_sub_batches):
+            start = i * sub_batch_size
+            end = min(start + sub_batch_size, total_points)
+            
+            A_sub = A_full[start:end]
+            b_sub = b_full[start:end]
+            coords_sub = coords_full[start:end]
+            
+            # Create System
+            threshold_A = cfg['data'].get('threshold_A', 0.20)
+            threshold_b = cfg['data'].get('threshold_b', 1.0)
+            
+            # Initialize system (data moves to device inside class usually, or we pass device)
+            system = PointLinearSystem(A_sub, b_sub, device=device, threshold_A=threshold_A, threshold_b=threshold_b)
+
+            # Create Solver
+            solver_type = cfg['solver'].get('type', 'fista')
+            output_dir = Path(cfg['data']['output_dir'])
+            
+            common_params = {
+                'lambda_reg': cfg['solver']['lambda_reg'],
+                'n_iter': cfg['solver']['n_iter'],
+                'output_dir': output_dir,
+                'positivity': cfg['solver']['positivity']
+            }
+
+            if solver_type == 'fista':
+                solver = BatchedFISTASolver(system, **common_params)
+            elif solver_type == 'ista':
+                solver = BatchedISTASolver(system, **common_params)
+            else:
+                raise ValueError(f"Unknown solver type: {solver_type}")
+            
+            # Solve
+            x_hat_sub = solver.solve() # Expected (B_sub, Z)
+            
+            # Move result to CPU
+            x_hat_cpu = x_hat_sub.detach().cpu()
+            
+            # Update global volume in shared memory
+            # coords_sub is (B_sub, 2) -> (x, y)
+            # We assume unique coordinates across batches as stated by user.
+            shared_x_global[coords_sub[:, 0], coords_sub[:, 1], :] = x_hat_cpu
+            
+            # Clean up GPU memory
+            del system, solver, x_hat_sub
+            torch.cuda.empty_cache()
+
+        logger.info(f"Finished {file_path.name} on {device}")
+
+        return f"Finished {file_path.name} on {device}"
+        
+    except Exception as e:
+        logger.error(f"Error processing {file_path}: {e}")
+        return f"Error processing {file_path.name}: {e}"
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="config/solve_point.yaml", help="Path to config")
+    parser.add_argument("--num_workers", type=int, default=None, help="Number of worker processes. Default: min(files, GPUs * 4)")
+    args = parser.parse_args()
+    
+    # Use spawn for CUDA compatibility
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
+    
+    cfg = load_config(args.config)
+
+    # Timestamped output folder + file logging, mirroring driver_pair.py
+    output_dir = Path(cfg['data']['output_dir'])
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    output_dir_ts = output_dir / timestamp
+    output_dir_ts.mkdir(parents=True, exist_ok=True)
+
+    log_file_path = output_dir_ts / "run.log"
+    file_handler = logging.FileHandler(log_file_path)
+    file_handler.setLevel(logging.INFO)
+    log_formatter = logging.Formatter('%(asctime)s - %(processName)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(log_formatter)
+    logging.getLogger().addHandler(file_handler)
+
+    logger.info(f"Loaded configuration from {args.config}")
+    logger.info(f"Output directory: {output_dir_ts}")
     
     data_dir = Path(cfg['data']['points_dir'])
-    output_dir = Path(cfg['data']['output_dir'])
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Use timestamped folder for all outputs
+    output_dir = output_dir_ts
     
     pattern = cfg['data']['batch_pattern']
     files = sorted(list(data_dir.glob(pattern)))
@@ -39,105 +158,89 @@ def main(config_path):
         return
 
     logger.info(f"Found {len(files)} batch files.")
-    
-    # Store results to reconstruct full volume
-    # We need to know dimensions.
-    # We can infer from the first batch and coords.
-    # Or just save solved batches and have a separate stitcher.
-    # Let's save solved batches first.
-    
-    for f in files:
-        logger.info(f"Processing {f}...")
-        data = torch.load(f, map_location='cpu')
-        
-        # A: (B, Pairs, Z)
-        # b: (B, Pairs)
-        A_full = data['A']
-        b_full = data['b']
-        coords_full = data['coords'] # (B, 2) -> (x, y)
-        batch_idx = data.get('batch_index', 0)
-        
-        total_points = A_full.shape[0]
-        sub_batch_size = cfg['solver'].get('batch_size', total_points) # Default to full if not set
-        
-        x_hat_list = []
-        
-        num_sub_batches = (total_points + sub_batch_size - 1) // sub_batch_size
-        logger.info(f"Splitting {total_points} points into {num_sub_batches} sub-batches of size {sub_batch_size}...")
-        
-        for i in range(num_sub_batches):
-            start = i * sub_batch_size
-            end = min(start + sub_batch_size, total_points)
-            
-            # Slice
-            A_sub = A_full[start:end]
-            b_sub = b_full[start:end]
-            
-            # Create System
-            # Move to GPU inside system init
-            threshold_A = cfg['data'].get('threshold_A', 0.20)
-            threshold_b = cfg['data'].get('threshold_b', 1.0)
-            system = PointLinearSystem(A_sub, b_sub, device=device, threshold_A=threshold_A, threshold_b=threshold_b)
 
-            # Create Solver
-            solver_type = cfg['solver'].get('type', 'fista')
-            if solver_type == 'fista':
-                solver = BatchedFISTASolver(
-                    system,
-                    lambda_reg=cfg['solver']['lambda_reg'],
-                    n_iter=cfg['solver']['n_iter'],
-                    output_dir=output_dir,
-                    positivity=cfg['solver']['positivity']
-                )
-            elif solver_type == 'ista':
-                solver = BatchedISTASolver(
-                    system,
-                    lambda_reg=cfg['solver']['lambda_reg'],
-                    n_iter=cfg['solver']['n_iter'],
-                    output_dir=output_dir,
-                    positivity=cfg['solver']['positivity']
-                )
-            else:
-                logger.error(f"Unknown solver type: {solver_type}")
-                break
-            
-            # Solve
-            x_hat_sub = solver.solve() # (B_sub, Z)
-            
-            # Move to CPU immediately to save GPU memory
-            x_hat_list.append(x_hat_sub.cpu())
-            
-            # Clean up
-            del system
-            del solver
-            del x_hat_sub
-            torch.cuda.empty_cache()
-            
-        # Concatenate results
-        x_hat = torch.cat(x_hat_list, dim=0)
-        
-        # Save result
-        out_name = f"solved_{f.name}"
-        save_path = output_dir / out_name
-        
-        # Move to CPU for saving
-        save_data = {
-            'x_hat': x_hat, # Already on CPU
-            'coords': coords_full,
-            'batch_index': batch_idx
-        }
-        torch.save(save_data, save_path)
-        logger.info(f"Saved {save_path}")
+    # Determine global volume dimensions
+    try:
+        # Peek at the first file for dimensions
+        sample = torch.load(files[0], map_location='cpu')
+        if 'full_dims' in sample:
+            X, Y, Z = sample['full_dims']
+            logger.info(f"Detected dimensions from file: {X}, {Y}, {Z}")
+        else:
+            logger.warning("full_dims not found in file. Falling back to hardcoded default (1192, 2048, 800).")
+            X, Y, Z = 1192, 2048, 800
+    except Exception as e:
+        logger.error(f"Failed to read dimensions from first file: {e}")
+        return
 
-    logger.info("All batches processed.")
+    logger.info(f"Allocating shared global volume ({X}, {Y}, {Z})...")
+    # Allocate tensor in shared memory
+    x_global = torch.zeros((X, Y, Z), dtype=torch.float32)
+    x_global.share_memory_()
     
-    # Optional: Reconstruct Volume
-    # We can do a quick check of max coord to allocate volume
-    # Or just leave it to a visualizer script.
+    # GPU setup
+    num_gpus = torch.cuda.device_count()
+    if num_gpus == 0:
+        logger.warning("No GPUs found! Running on CPU.")
+        num_gpus = 1 # Logical count for modulo ops
+        using_cuda = False
+    else:
+        logger.info(f"Available GPUs: {num_gpus}")
+        using_cuda = True
     
+    # Worker setup
+    if args.num_workers is None:
+        # Default strategy: 1 workers per GPU (if CUDA), else just 1 workers total or len(files)
+        workers_per_gpu = 1 if using_cuda else 1
+        num_workers = min(len(files), num_gpus * workers_per_gpu)
+    else:
+        num_workers = args.num_workers
+        
+    logger.info(f"Starting execution with {num_workers} workers.")
+    
+    # Prepare tasks: (file, gpu_id, config)
+    tasks = []
+    for i, f in enumerate(files):
+        # Round-robin assignment of GPUs
+        gpu_id = i % num_gpus
+        tasks.append((f, gpu_id, cfg))
+        
+    t0 = time.time()
+    
+    with mp.Pool(processes=num_workers, initializer=init_worker, initargs=(x_global,)) as pool:
+        # Map tasks to workers
+        results = pool.map(process_file, tasks, chunksize=1)
+        
+    # Check results
+    errors = [r for r in results if "Error" in r]
+    if errors:
+        logger.error(f"Encountered {len(errors)} errors:")
+        for e in errors:
+            logger.error(e)
+    else:
+        logger.info("All tasks completed successfully.")
+            
+    logger.info(f"Total processing time: {time.time() - t0:.2f}s")
+    
+    # Save final result
+    logger.info("Saving reconstructed volume...")
+    save_path = output_dir / "reconstruction.pt"
+    torch.save(
+        {
+            'reconstruction': x_global, # This is the shared tensor, now populated
+            'X': X, 'Y': Y, 'Z': Z,
+            'source_batches': [str(p) for p in files],
+        },
+        save_path,
+    )
+    logger.info(f"Saved {save_path}")
+
+    # Persist config for reproducibility (like driver_pair.py)
+    try:
+        with open(output_dir / "config_used.yaml", 'w') as f:
+            yaml.safe_dump(cfg, f)
+    except Exception as e:
+        logger.warning(f"Failed to write config_used.yaml: {e}")
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="config/solve_point.yaml", help="Path to config")
-    args = parser.parse_args()
-    
-    main(args.config)
+    main()
