@@ -20,10 +20,15 @@ class Solver(ABC):
                  tag: str = "",
                  **kwargs):
         self.system = linear_system
-        self.history = {'loss': [], 'residual_norm': [], 'sparsity': []}
+        # History arrays are appended only at logging steps (every log_interval and
+        # the final iter). Keep an explicit iteration index list so plotting can
+        # show the true iteration numbers.
+        self.history = {'loss': [], 'residual_norm': [], 'sparsity': [], 'iter': []}
         self.output_dir = output_dir
         # Optional suffix for output artifacts (plots/meshes) to avoid overwriting.
         self.tag = str(tag) if tag is not None else ""
+        
+        self.log_interval = 25
 
     def _tagged_name(self, base: str, ext: str) -> str:
         """Build output filename with optional tag.
@@ -52,7 +57,7 @@ class Solver(ABC):
         for k in range(n_iter):
             x = self._solve_step(x, k)
             # Logging
-            if verbose and (k % 25 == 0 or k == n_iter - 1):
+            if verbose and (k % self.log_interval == 0 or k == n_iter - 1):
                 self.log(x, k)
         x = self._post_solve(x)
         return x
@@ -100,6 +105,7 @@ class Solver(ABC):
         self.history['loss'].append(loss)
         self.history['residual_norm'].append(resid_norm)
         self.history['sparsity'].append(sparsity)
+        self.history['iter'].append(int(k))
         self.history['min_x'] = min_x  # Store in history for potential future use
         self.history['max_x'] = max_x
         self.history['mean_x'] = mean_x
@@ -146,8 +152,9 @@ class Solver(ABC):
             
         logger.info("Solver finished. Running post-processing hooks.")
         self._plot_history()
-        # self._export_mesh(x)
-        
+        # Keep a simple mesh export enabled by default for parity with tests and
+        # existing workflows. The driver scripts can do additional exports.
+        self._export_mesh(x)
         return x
 
     def _plot_history(self):
@@ -157,15 +164,26 @@ class Solver(ABC):
             return
         fig, ax = plt.subplots(figsize=(10, 6))
 
+        # X axis should reflect the actual solver iteration numbers at which we
+        # logged statistics.
+        iters = self.history.get('iter')
+        if iters and len(iters) == len(self.history['residual_norm']):
+            x_axis = iters
+        else:
+            # Backward-compatible fallback: infer iteration numbers from the log
+            x_axis = [i * self.log_interval for i in range(len(self.history['residual_norm']))]
+
         ax.set_xlabel('Iteration')
         ax.set_ylabel('Residual Norm')
-        ax.plot(self.history['residual_norm'], label='Residual Norm')
+        ax.plot(x_axis, self.history['residual_norm'], label='Residual Norm')
         ax.set_yscale('log')
 
         fig.tight_layout()
         plt.title('Solver Convergence')
         
-        save_path = self.output_dir / self._tagged_name("loss_curve", ".png")
+        sub_dir = self.output_dir / "loss_curve"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        save_path = sub_dir / self._tagged_name("loss_curve", ".png")
         plt.savefig(save_path)
         logger.info(f"Saved convergence plot to {save_path}")
         plt.close(fig)
@@ -189,8 +207,10 @@ class Solver(ABC):
             return
             
         logger.info("Exporting volume to mesh...")
+        sub_dir = self.output_dir / "mesh"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        mesh_output_path = sub_dir / self._tagged_name(f"reconstruction_{iso_value}", ".obj")
 
-        mesh_output_path = self.output_dir / self._tagged_name("reconstruction", ".obj")
         volume = x.cpu().float().numpy()
         
         export_volume_to_obj(

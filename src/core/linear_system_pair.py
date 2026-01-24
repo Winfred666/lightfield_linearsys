@@ -35,6 +35,8 @@ class LinearSystemPair:
             
         shape_A = A_list[0].shape
         self.shape_x = shape_A
+
+        # WARNING: X, Y, Z is only the range of dot product, not linear system shape which is (B*HW x WHD)
         self.X, self.Y, self.Z = shape_A
         
         all_indices = []
@@ -80,11 +82,11 @@ class LinearSystemPair:
 
             total_rows += n_total
             
-            # Free memory
-            A_list[i] = None
-            b_list[i] = None
-            import gc
-            gc.collect()
+            # Free memory, only necessary when GPU OOM.
+            # A_list[i] = None
+            # b_list[i] = None
+            # import gc
+            # gc.collect()
 
         logger.info(f"Compressed system: kept {kept_rows}/{total_rows} rows ({(kept_rows/total_rows)*100:.2f}%)")
         

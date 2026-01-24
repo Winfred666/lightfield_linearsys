@@ -97,7 +97,6 @@ def preprocess_points_optimized(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    data_path = Path(data_dir)
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     
@@ -296,7 +295,7 @@ def preprocess_points_optimized(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir", default="data/processed", help="Directory with pair_*.h5")
-    parser.add_argument("--output_dir", default=None, help="Output directory (default: derived from data_dir)")
+    # parser.add_argument("--output_dir", default="data/points", help="Output directory (default: derived from data_dir)")
     parser.add_argument("--batch_size", type=int, default=30000, help="Points per output file")
     parser.add_argument("--batches_per_pass", type=int, default=1, help="Number of batches to process in one pass (depends on RAM)")
     parser.add_argument("--limit_batches", type=int, default=None, help="Limit number of batches for testing")
@@ -321,11 +320,8 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    if args.output_dir is None:
-        # Infer from data_dir
-        # Use the last path component of data_dir as the suffix (handles trailing slashes)
-        suffix = Path(args.data_dir).expanduser().resolve().name
-        args.output_dir = f"data/points/{suffix}_{args.batch_size}"
+    # Infer from data_dir
+    args.output_dir = f"{args.data_dir.replace('processed', 'points')}_{args.batch_size}"
 
     logger.info(f"Data Dir: {args.data_dir}")
     logger.info(f"Output Dir: {args.output_dir}")

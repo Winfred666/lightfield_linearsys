@@ -118,8 +118,9 @@ def test_reconstruction_smoke():
         assert x_result.shape == (X, Y, Z)
         
         # 4. Verify outputs (now created by solver's _post_solve hook)
-        obj_path = output_dir / "reconstruction.obj"
-        plot_path = output_dir / "loss_curve.png"
+        # Outputs are created by Solver._post_solve into subfolders.
+        obj_path = output_dir / "mesh" / "reconstruction_0.5.obj"
+        plot_path = output_dir / "loss_curve" / "loss_curve.png"
 
         assert log_file_path.exists()
         assert obj_path.exists()

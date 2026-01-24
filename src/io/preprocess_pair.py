@@ -247,13 +247,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--img-dir",
         type=str,
-        default="data/raw/average_imgs",
+        default="data/raw/20um_imgs",
         help="Directory containing 1scan (idx).tif images.",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="data/processed",
+        default="data/processed/20um_imgs",
         help="Output directory for pair_{idx}.h5 files.",
     )
     parser.add_argument(

@@ -56,7 +56,7 @@ class ISTASolver(Solver):
         # In-place optimization: v = max(0, v - threshold)
         if threshold > 0:
             v.sub_(threshold)
-        v.clamp_(min=0) # Non negative assumption
+        v.clamp_(min=0) # Non negative assumption, projection.
         return v
 
     def _solve_step(self, x: torch.Tensor, k: int) -> torch.Tensor:

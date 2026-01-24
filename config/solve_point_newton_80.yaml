@@ -1,16 +1,16 @@
 data:
-  points_dir: "data/points/ds1p0_10000"
-  output_dir: "result/solve_point/ista"
+  points_dir: "data/points/80um_imgs/ds0p5_30000"
+  output_dir: "result/solve_point/newton/80um_imgs/ds0p5_30000"
   batch_pattern: "points_batch_*.pt"
   threshold_A: 0.05
   threshold_b: 0.01
 
 solver:
-  type: "ista" # Options: fista, ista
-  lambda_reg: 0.0
-  n_iter: 1000
+  type: "newton" # Options: newton, ista
+  lambda_reg: 0.00001
+  n_iter: 25
   positivity: true
-  batch_size: 30000 # Sub-batch size for solving on GPU
+  batch_size: 500 # Sub-batch size for solving on GPU
 
 device: "cuda" # or cpu
 

@@ -1,10 +1,17 @@
-# Configuration for Light Field Solver (FISTA)
+# Configuration for Light Field Solver (FISTA) - Version 2 with average_imgs2
+# Using new average_imgs2 data and downsampled 0.125 pairs
 
 data:
-  data_dir: "data/processed"
-  output_dir: "result/solve_pair/fista"
+  data_dir: "data/processed/version_2/ds0p125"
+  output_dir: "result/solve_pair/fista_version2"
+  # Optional path to a .pt file containing 'reconstruction' tensor to initialize x_global
+  init_global_x: null
+
+  # Memory consuming: using joint pair could joint solving multiple measurement together for better quality.
+  joint_pair_num: 1
+
   max_pairs: null  # Set to null or a large number for full run
-  threshold_A: 0.05
+  threshold_A: 0.05 # Threshold for filtering zero rows in light field A
   threshold_b: 0.01 # Threshold for filtering target b
 
 solver:
@@ -17,7 +24,7 @@ solver:
 # When enabled, the solver runs on a reduced set of free variables.
 masking:
   enabled: false
-  # Only A entries > threshold_A are considered positive contributions.
+  
   # If false, masking inference is disabled (conservative) because A may have negatives.
   assume_non_negative_A: true
 

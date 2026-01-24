@@ -4,6 +4,7 @@ import torch
 import torch.multiprocessing as mp
 from pathlib import Path
 import logging
+import logging.handlers
 import sys
 import os
 import time
@@ -13,8 +14,9 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from src.core.point_system import PointLinearSystem
-from src.core.batched_fista import BatchedFISTASolver
+from core.batched_newton_activeset import BatchedRegNewtonASSolver
 from src.core.batched_ista import BatchedISTASolver
+from src.utils.volume2mesh import export_volume_to_obj
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(processName)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -22,14 +24,30 @@ logger = logging.getLogger(__name__)
 # Global variable for workers to access the shared tensor
 shared_x_global = None
 
+
+def _configure_worker_logging(log_queue):
+    """Configure logging in a worker process to forward records to the parent."""
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    # Remove any inherited handlers (including the parent's FileHandler) to avoid
+    # file write races / duplicated logs.
+    for h in root.handlers[:]:
+        root.removeHandler(h)
+
+    qh = logging.handlers.QueueHandler(log_queue)
+    root.addHandler(qh)
+
+
 def load_config(config_path):
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
-def init_worker(x_global_tensor):
-    """Initialize worker process by setting the shared global volume."""
+def init_worker(x_global_tensor, log_queue):
+    """Initialize worker process by setting the shared global volume and logging."""
     global shared_x_global
     shared_x_global = x_global_tensor
+    _configure_worker_logging(log_queue)
 
 def process_file(args):
     """Worker function to process a single points file."""
@@ -44,7 +62,7 @@ def process_file(args):
             device = torch.device('cpu')
         logger.info(f"START {file_path.name} on {device}")
 
-        # Load data
+        # Load data: IO time is the main bottleneck !!!
         data = torch.load(file_path, map_location='cpu')
         
         A_full = data['A']
@@ -86,8 +104,8 @@ def process_file(args):
                 'positivity': cfg['solver']['positivity']
             }
 
-            if solver_type == 'fista':
-                solver = BatchedFISTASolver(system, **common_params)
+            if solver_type == 'newton':
+                solver = BatchedRegNewtonASSolver(system, **common_params)
             elif solver_type == 'ista':
                 solver = BatchedISTASolver(system, **common_params)
             else:
@@ -130,6 +148,10 @@ def main():
     
     cfg = load_config(args.config)
 
+    # Optional mesh export config (mirrors driver_pair.py style)
+    # Can be a single float/int or a list/tuple of iso values.
+    mesh_isos = cfg.get('mesh_iso', None)
+
     # Timestamped output folder + file logging, mirroring driver_pair.py
     output_dir = Path(cfg['data']['output_dir'])
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
@@ -137,11 +159,23 @@ def main():
     output_dir_ts.mkdir(parents=True, exist_ok=True)
 
     log_file_path = output_dir_ts / "run.log"
+
+    # --- Multiprocessing-safe logging ---
+    # All workers send LogRecords to this queue; the parent writes them to file.
+    log_queue = mp.Manager().Queue(-1)
+
+    # Parent-side file handler + listener
     file_handler = logging.FileHandler(log_file_path)
     file_handler.setLevel(logging.INFO)
     log_formatter = logging.Formatter('%(asctime)s - %(processName)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(log_formatter)
-    logging.getLogger().addHandler(file_handler)
+    queue_listener = logging.handlers.QueueListener(log_queue, file_handler)
+    queue_listener.start()
+
+    # Parent root logger: keep console output, and also forward to file via queue.
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(logging.handlers.QueueHandler(log_queue))
 
     logger.info(f"Loaded configuration from {args.config}")
     logger.info(f"Output directory: {output_dir_ts}")
@@ -207,9 +241,16 @@ def main():
         
     t0 = time.time()
     
-    with mp.Pool(processes=num_workers, initializer=init_worker, initargs=(x_global,)) as pool:
-        # Map tasks to workers
-        results = pool.map(process_file, tasks, chunksize=1)
+    try:
+        with mp.Pool(processes=num_workers, initializer=init_worker, initargs=(x_global, log_queue)) as pool:
+            # Map tasks to workers
+            results = pool.map(process_file, tasks, chunksize=1)
+    finally:
+        # Ensure all pending log records are flushed to disk.
+        try:
+            queue_listener.stop()
+        except Exception:
+            pass
         
     # Check results
     errors = [r for r in results if "Error" in r]
@@ -234,6 +275,28 @@ def main():
         save_path,
     )
     logger.info(f"Saved {save_path}")
+
+    # Optional: export snapshot + mesh (similar to driver_pair.py)
+    try:
+        if mesh_isos is not None:
+            if isinstance(mesh_isos, (list, tuple)):
+                iso_list = [float(v) for v in mesh_isos]
+            else:
+                iso_list = [float(mesh_isos)]
+
+            vol_np = x_global.cpu().float().numpy()
+            for iso in iso_list:
+                logger.info(f"Exporting mesh with iso={iso} ...")
+                # One mesh per iso to avoid overwriting.
+                obj_path = output_dir / f"reconstruction_iso_{iso}.obj"
+                export_volume_to_obj(
+                    vol_np,
+                    obj_path,
+                    iso_value=iso,
+                )
+                logger.info(f"Saved mesh to {obj_path}")
+    except Exception as e:
+        logger.warning(f"Mesh export failed: {e}")
 
     # Persist config for reproducibility (like driver_pair.py)
     try:

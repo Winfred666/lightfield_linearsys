@@ -34,7 +34,6 @@ class PointLinearSystem:
             self.A = self.A * mask.unsqueeze(2).float()
             self.b = self.b * mask.float()
             
-            # Log stats?
             total = mask.numel()
             kept = mask.sum().item()
             logger.info(f"PointLinearSystem: Masked {total-kept}/{total} rows ({(kept/total)*100:.2f}% kept). Th_A={threshold_A}, Th_b={threshold_b}")

@@ -33,36 +33,69 @@ Also each pixel in one measurement represent 3.45um length in real world.
 
 The measurement is origined at center of x-y plane in light field, which means that when cliping for valid data, we should clip the redundant padding at left and right of measurement images and that at top and bottom of scaled light-field.
 
-## Current result
+## Execution Workflow
 
-### Execute
-
-Running
+### 1. Preprocessing
+First, convert raw data into HDF5 pairs, then optionally into point batches for faster parallel solving.
 
 ```bash
-python driver.py --config config/default.yaml
+# Preprocess pairs (generates data/processed/ds0p125/pair_*.h5)
+python src/io/preprocess_pair.py --downsampling-rate 0.125
+
+# Preprocess points (generates data/points_scale_ds0p125/points_batch_*.pt)
+python src/io/preprocess_point.py --data_dir data/processed/ds0p125 --batch_size 10000
+```
+
+### 2. Solving
+Choose between pair-based iteration or point-based parallel solving.
+
+#### Point-based Solver (Recommended for GPU clusters)
+Uses multiprocessing to distribute point batches across all available GPUs.
+```bash
+python driver_point.py --config config/solve_point_ista.yaml
+```
+
+#### Pair-based Solver
+```bash
+python driver_pair.py --config config/solve_pair_ista.yaml
+```
+
+### 3. Visualization
+```bash
+# Visualize processed HDF5 pairs
+python scripts/visualize_processed.py data/processed/ds0p125/pair_2.h5
+
+# Interactive 3D visualization of reconstruction
+python scripts/visualize_light_field.py result/solve_point_fista/TIMESTAMP/reconstruction.pt
 ```
 
 ## TODO
 
 - [X] Check whether the data dimension is correct as `## Raw Data Statement` says.
-
-- [X] Preprocess each image-light_field pairs into a clean Ax=b data set file, sparse storing way is wellcomed if there are many zeros. 
-
-- [X] Implement FISTA solver core logic with sparse/compressed data handling.
-- [X] Create driver script to solve joint system of multiple pairs.
-
-
-- [ ] In `src/io/preprocess_pair.py`, write downsample version of A,b pair to accelerate solving process.
+- [X] Preprocess each image-light_field pairs into HDF5 Ax=b dataset.
+- [X] Implement point-based solver with multiprocessing and shared memory.
+- [X] Add interactive 3D visualization with PyVista.
+- [ ] Implement automated hyperparameter tuning for $\lambda$ regularization.
+- [ ] Add support for 3D TV (Total Variation) regularization.
 
 ## Develop Log
 
-- **2026-01-18**: Implemented `src/core/solver.py` containing `FISTASolver` and `LinearSystem`.
-    - Added memory optimization: converts dense tensors to `float16` and explicitly manages memory to allow processing multiple >7GB pairs on limited RAM.
-    - Implemented row filtering (though `pair_1` was found to be 100% dense in pixels).
-    - Created `driver.py` to join multiple `Ax=b` systems. Tested with 2 pairs successfully.
-    - Added unit tests in `test/test_solver.py`.
-    - Note: `float16` usage may cause logging to show `inf` loss due to limited range, but solver runs.
+- **2026-01-24**: Remove Fista solver, Tried Lawson-Hanson Non-Negative Least Squares (NNLS) solver. But impractical because too slow. Even worse, scipy.optimize.nnls requires to explicitly build A, not matrix-free; For point-wise solver, implement BatchedProjectRegNewtonSolver which help converge faster and let density bunch together along z axis.     
+    - Implemented `LawsonHansonNNLSSolver`, deleted.
+    - Integrated NNLS into `driver_pair.py` as a selectable solver type (deprecated)
+
+
+
+- **2026-01-23**: Major performance and scalability update.
+    - Switched to HDF5 for pair storage to allow partial slicing.
+    - Implemented `driver_point.py` with `torch.multiprocessing` and shared memory for massive parallelization across 8 GPUs.
+    - Added `full_dims` metadata to point batches to automate reconstruction volume allocation.
+    - Enhanced `visualize_light_field.py` with interactive clipping and thresholding widgets.
+
+- **2026-01-22**: use H5 to speedup executing.
+
+- **2026-01-20**: use ISTA, try point-wise solver.
+
 - **2026-01-19**: Refactored codebase and added visualization.
     - **Refactoring**: Moved `LinearSystem` to `src/core/linear_system.py` to decouple it from the solver logic.
     - **Solver**: Enhanced `FISTASolver` to log residual norms ($||Ax-b||$) and sparsity per iteration.
@@ -70,6 +103,8 @@ python driver.py --config config/default.yaml
     - **Driver**: Updated `driver.py` to use YAML config, output comprehensive results (reconstruction, convergence history, projection validation), and support future solvers.
     - **Visualization**: Created `scripts/visualize_result.py` to generate convergence plots, fidelity checks ($Ax$ vs $b$), volume slices, and video scans.
 
-- **2026-01-20**: use ISTA, try point-wise solver.
-
-- **2026-01-22**: use H5 to speedup executing.
+- **2026-01-18**: Implemented `src/core/solver.py` containing `FISTASolver` and `LinearSystem`.
+    - Added memory optimization: converts dense tensors to `float16` and explicitly manages memory to allow processing multiple >7GB pairs on limited RAM.
+    - Implemented row filtering.
+    - Created `driver.py` to join multiple `Ax=b` systems.
+    - Added unit tests in `test/test_solver.py`.
