@@ -200,7 +200,7 @@ class Solver(ABC):
         logger.info(f"Saved reconstructed volume to {volume_output_path}")
 
 
-    def _export_mesh(self, x: torch.Tensor, iso_value: float = 0.5):
+    def _export_mesh(self, x: torch.Tensor, iso_value: float = 1.0):
         """Exports the reconstructed volume to an OBJ mesh."""
         if x.numel() == 0:
             logger.warning("Reconstruction is empty, skipping mesh export.")

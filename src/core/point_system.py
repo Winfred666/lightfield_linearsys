@@ -29,7 +29,7 @@ class PointLinearSystem:
             mask = mask & (self.b > threshold_b)
             
         if threshold_A is not None or threshold_b is not None:
-            # Apply mask
+            # Apply mask (not filter any row, just zero out)
             # mask: (B, M) -> (B, M, 1) for A
             self.A = self.A * mask.unsqueeze(2).float()
             self.b = self.b * mask.float()

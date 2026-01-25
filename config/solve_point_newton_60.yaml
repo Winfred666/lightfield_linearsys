@@ -1,6 +1,6 @@
 data:
-  points_dir: "data/points/20um_imgs/ds0p5_30000"
-  output_dir: "result/solve_point/newton/20um_imgs/ds0p5_30000"
+  points_dir: "data/points/60um_imgs/ds0p5_30000"
+  output_dir: "result/solve_point/newton/60um_imgs/ds0p5_30000"
   batch_pattern: "points_batch_*.pt"
   threshold_A: 0.10
   threshold_b: 0.05
@@ -10,10 +10,10 @@ solver:
   lambda_reg: 0.001
   n_iter: 40
   positivity: true
-  batch_size: 500 # Sub-batch size for solving on GPU
+  batch_size: 1000 # Sub-batch size for solving on GPU
 
 device: "cuda" # or cpu
 
 # Optional: export mesh after reconstruction.
 # If omitted, no mesh is exported.
-mesh_iso: [2.0, 4.0, 6.0]
+mesh_iso: [1.0, 2.0, 4.0]

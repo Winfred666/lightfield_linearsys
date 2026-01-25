@@ -2,8 +2,8 @@ data:
   points_dir: "data/points"
   output_dir: "result/solve_point/fista"
   batch_pattern: "points_batch_*.pt"
-  threshold_A: 0.05
-  threshold_b: 0.01
+  threshold_A: 0.10
+  threshold_b: 0.8
 
 solver:
   type: "fista" # Options: fista, ista

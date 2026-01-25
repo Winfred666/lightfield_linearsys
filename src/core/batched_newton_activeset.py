@@ -72,8 +72,8 @@ class BatchedRegNewtonASSolver:
         x = torch.zeros(self.B, self.N, device=self.device) if x0 is None else x0.to(self.device)
         
         beta = 0.5
-        c = 1e-7
-        max_ls_iter = 10
+        c = 1e-6
+        max_ls_iter = 20
         
         for k in range(self.n_iter):
             # --- 1. Compute Unconstrained Gradient ---

@@ -10,8 +10,8 @@ data:
   joint_pair_num: 25
   
   max_pairs: null  # Set to null or a large number for full run
-  threshold_A: 0.05 # Important: Threshold for filtering zero rows in light field A
-  threshold_b: 0.01 # Optional when many ghost volume: Threshold for filtering target b
+  threshold_A: 0.10 # Important: Threshold for filtering zero rows in light field A
+  threshold_b: 0.8 # Optional when many ghost volume: Threshold for filtering target b
 
 solver:
   type: "ista" # Options: fista, ista

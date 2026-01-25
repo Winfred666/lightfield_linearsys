@@ -11,6 +11,10 @@ import logging
 from datetime import datetime
 import argparse
 
+# thresholds = [1.0, 0.9, 0.7, 0.6, 0.4, 0.2, 0.1, 1e-2]
+thresholds = [8.0, 6.0, 4.0, 2.0, 1.0, 0.9]
+
+
 def setup_logging(output_dir):
     log_path = output_dir / "analysis.log"
     logging.basicConfig(
@@ -216,6 +220,7 @@ def visualize(
     hist_log_bins: bool = True,
     hist_decades: int = 6,
 ):
+    global thresholds
     # Setup Output Directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(f"result/visualize_test/{timestamp}")
@@ -275,8 +280,8 @@ def visualize(
         plt.close(fig_mask)
         logger.info("Saved mask_saturated_inflated.png")
     
-    # Clip image values to [0, 1] as requested
-    img = torch.clamp(img, 0.0, 1.0)
+    # Optional: Clip image values to [0, 1] as requested
+    # img = torch.clamp(img, 0.0, 1.0)
     
     img_np = img.numpy()
 
@@ -388,8 +393,6 @@ def visualize(
     if img_flat.size == 0:
         logger.warning("Target image is empty; skipping threshold previews.")
     else:
-        thresholds = [1.0, 0.9, 0.7, 0.6, 0.4, 0.2, 0.1, 1e-2]
-
         img_min_raw = float(np.min(img_flat))
         img_max_raw = float(np.max(img_flat))
         logger.info("Target image absolute range: min=%.8g max=%.8g", img_min_raw, img_max_raw)
