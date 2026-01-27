@@ -17,6 +17,7 @@ from src.core.point_system import PointLinearSystem
 from core.batched_newton_activeset import BatchedRegNewtonASSolver
 from src.core.batched_ista import BatchedISTASolver
 from src.utils.volume2mesh import export_volume_to_obj
+from src.io.preprocess_point import preprocess_points_from_raw
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(processName)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -180,18 +181,43 @@ def main():
     logger.info(f"Loaded configuration from {args.config}")
     logger.info(f"Output directory: {output_dir_ts}")
     
-    data_dir = Path(cfg['data']['points_dir'])
-    # Use timestamped folder for all outputs
-    output_dir = output_dir_ts
-    
-    pattern = cfg['data']['batch_pattern']
-    files = sorted(list(data_dir.glob(pattern)))
+    # --- File Discovery (Raw vs Processed) ---
+    raw_A_dir = cfg['data'].get('raw_A_dir')
+    if raw_A_dir:
+        # RAW Mode
+        logger.info("Configuration points to raw data. Generating points batches on-the-fly.")
+        
+        # Use a subfolder in the run directory for the temporary batch files
+        # This keeps the original data directory clean
+        cache_dir = output_dir_ts / "points_cache"
+        
+        # Default batch size for files (not to be confused with solver batch_size)
+        # We try to infer from config or use a reasonable default.
+        # cfg['data']['batch_size'] isn't standard, but we can look for it.
+        # Otherwise 30000 is the convention.
+        file_batch_size = cfg['data'].get('file_batch_size', 30000)
+        
+        files = preprocess_points_from_raw(
+            input_dir=raw_A_dir,
+            img_dir=cfg['data']['raw_b_dir'],
+            output_dir=cache_dir,
+            downsampling_rate=cfg['data']['downsampling_rate'],
+            scale_factor=cfg['data'].get('scale_factor', 8.0),
+            max_pairs=cfg['data'].get('max_pairs'),
+            batch_size=file_batch_size
+        )
+        logger.info(f"Generated {len(files)} batch files in {cache_dir}")
+        
+    else:
+        # Processed Mode (Legacy)
+        data_dir = Path(cfg['data']['points_dir'])
+        pattern = cfg['data']['batch_pattern']
+        files = sorted(list(data_dir.glob(pattern)))
+        logger.info(f"Found {len(files)} batch files in {data_dir} matching {pattern}")
     
     if not files:
-        logger.error(f"No files found matching {pattern} in {data_dir}")
+        logger.error(f"No files found to process.")
         return
-
-    logger.info(f"Found {len(files)} batch files.")
 
     # Determine global volume dimensions
     try:

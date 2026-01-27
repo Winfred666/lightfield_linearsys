@@ -2,16 +2,22 @@
 # Using new average_imgs2 data and downsampled 0.125 pairs
 
 data:
-  data_dir: "data/processed/60um_imgs/ds0p5"
+  # Option 2: On-the-fly preprocessing (Raw Data)
+  # If these are set, they override data_dir
+  raw_A_dir: "data/raw/lightsheet_vol_6.9"
+  raw_b_dir: "data/raw/60um_imgs"
+  downsampling_rate: 0.5 # scale_factor defaults to 8.0, matching preprocess logic
+  scale_factor: 8.0
+  
   output_dir: "result/solve_pair/ista_60um_imgs_ds0p5"
   # Optional path to a .pt file containing 'reconstruction' tensor to initialize x_global
   init_global_x: null
 
   # Memory consuming: using joint pair could joint solving multiple measurement together for better quality.
-  joint_pair_num: 10
+  joint_pair_num: 15
 
   max_pairs: null  # Set to null or a large number for full run
-  threshold_A: 0.10 # Threshold for filtering zero rows in light field A
+  threshold_A: 0.0001 # Threshold for filtering zero rows in light field A
   threshold_b: 0.0 # Threshold for filtering target b
 
 solver:

@@ -214,6 +214,7 @@ def annotate_histogram_counts(
 
 def visualize(
     file_path,
+    args=None, # Pass full args object for flexibility
     norm_mode="percentile",
     video_downsample: int = 1,
     video_fps: int = 10,
@@ -233,30 +234,76 @@ def visualize(
     # Load Data
     try:
         logger.info("Loading data... (this might take a while for large files)")
-        file_path_obj = Path(file_path)
         
-        if file_path_obj.suffix == '.h5':
-            with h5py.File(file_path_obj, 'r') as f:
-                logger.info("Reading HDF5 datasets 'A' and 'b'...")
-                # Read into memory
-                vol = torch.from_numpy(f['A'][:])
-                img = torch.from_numpy(f['b'][:])
-        else:
-            data = torch.load(file_path, map_location='cpu')
+        # Check if raw mode arguments are provided
+        raw_mode = False
+        if hasattr(args, 'input_dir') and args.input_dir and hasattr(args, 'img_dir') and args.img_dir:
+            raw_mode = True
             
-            if isinstance(data, dict):
-                vol = data.get('A')
-                img = data.get('b')
+        if raw_mode:
+             from src.io.preprocess_pair import preprocess_one_pair
+             from src.io.raw_pairs import find_raw_pairs
+             
+             pairs = find_raw_pairs(args.input_dir, args.img_dir)
+             target_pair = None
+             
+             # Try to match the specific file requested, or default to the first one
+             target_idx = 1
+             if args.file_path and "pair_" in args.file_path:
+                 # Try to extract index from filename like pair_2.h5 or similar
+                 import re
+                 match = re.search(r'(\d+)', Path(args.file_path).name)
+                 if match:
+                     target_idx = int(match.group(1))
+            
+             # Find the matching pair
+             for p in pairs:
+                 if p.idx == target_idx:
+                     target_pair = p
+                     break
+             
+             if not target_pair and pairs:
+                 logger.warning(f"Pair index {target_idx} not found, defaulting to first available pair {pairs[0].idx}")
+                 target_pair = pairs[0]
+                 
+             if not target_pair:
+                 logger.error("No valid raw pairs found.")
+                 return
+
+             logger.info(f"Processing Raw Pair Index {target_pair.idx} from {target_pair.vol_path} and {target_pair.img_path}")
+             
+             vol, img = preprocess_one_pair(
+                 vol_path=target_pair.vol_path,
+                 img_path=target_pair.img_path,
+                 downsampling_rate=args.downsampling_rate,
+                 scale_factor=args.scale_factor,
+                 device=torch.device("cpu") # Visualize on CPU
+             )
+        else:
+            # Legacy/Direct file mode
+            file_path_obj = Path(file_path)
+            if file_path_obj.suffix == '.h5':
+                with h5py.File(file_path_obj, 'r') as f:
+                    logger.info("Reading HDF5 datasets 'A' and 'b'...")
+                    # Read into memory
+                    vol = torch.from_numpy(f['A'][:])
+                    img = torch.from_numpy(f['b'][:])
             else:
-                # Fallback if structure is different
-                vol = data[0]
-                img = data[1]
+                data = torch.load(file_path, map_location='cpu')
+                
+                if isinstance(data, dict):
+                    vol = data.get('A')
+                    img = data.get('b')
+                else:
+                    # Fallback if structure is different
+                    vol = data[0]
+                    img = data[1]
             
         logger.info(f"Volume Shape: {vol.shape}, Type: {vol.dtype}")
         logger.info(f"Image Shape: {img.shape}, Type: {img.dtype}")
         
     except Exception as e:
-        logger.error(f"Failed to load file: {e}")
+        logger.error(f"Failed to load file or process raw data: {e}", exc_info=True)
         return
 
     # Convert to numpy for plotting (subsample volume for histograms to save memory/time)
@@ -510,7 +557,7 @@ def visualize(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("file_path", nargs='?', default="data/processed/ds0p125/pair_2.h5", help="Path to the .h5 or .pt file")
+    parser.add_argument("file_path", nargs='?', default=None, help="Path to the .h5 or .pt file (Optional if using raw dirs)")
     parser.add_argument(
         "--norm",
         choices=["percentile", "minmax"],
@@ -530,13 +577,24 @@ if __name__ == "__main__":
         default=10,
         help="Number of decades for log histogram buckets (e.g., 6 -> 1e-6..1)",
     )
+    
+    # Raw Data Mode Arguments
+    parser.add_argument("--input-dir", default=None, help="Raw volume directory (e.g. data/raw/lightsheet_vol_6.9)")
+    parser.add_argument("--img-dir", default=None, help="Raw image directory (e.g. data/raw/20um_imgs)")
+    parser.add_argument("--downsampling-rate", type=float, default=0.125, help="Downsampling rate for raw mode")
+    parser.add_argument("--scale-factor", type=float, default=8.0, help="Scale factor for raw mode")
+
     args = parser.parse_args()
     
-    if not Path(args.file_path).exists():
-        print(f"Error: File {args.file_path} does not exist.")
+    # Logic: If raw dirs are provided, we use raw mode. file_path argument might be used to specify index (e.g. "pair_2")
+    raw_mode = (args.input_dir is not None and args.img_dir is not None)
+    
+    if not raw_mode and not Path(args.file_path).exists():
+        print(f"Error: File {args.file_path} does not exist and no raw directories provided.")
     else:
         visualize(
             args.file_path,
+            args=args,
             norm_mode=args.norm,
             video_downsample=args.video_downsample,
             video_fps=args.video_fps,

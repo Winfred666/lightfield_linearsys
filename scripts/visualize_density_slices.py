@@ -1,46 +1,31 @@
 #!/usr/bin/env python3
 
-"""Visualize reconstruction + ghost volumes as 2D slice videos.
-
-This script is a non-interactive companion to `visualize_light_field.py`.
-It loads a `reconstruction.pt` (or a directory containing it) and, if present,
-unions all `ghost_volume/*.pt` under the same run folder.
-
-It then renders 2D slices and saves Z-scan videos under `<run_dir>/viz/`.
-
-Outputs (always generated):
-- density_xy_no_ghost.mp4
-- density_xy_ghost_full.mp4
-- density_xy_ghost_thr025.mp4
-- density_xy_ghost_thr050.mp4
-
-Notes
------
-- Density is rendered with the `viridis` colormap.
-- The density colorbar is consistent across all output videos.
-- Ghost overlay is rendered as a magenta RGBA layer on top of the density.
-  For thresholded modes, the per-frame ghost is thresholded relative to the
-  *global max* of the union ghost volume.
-
 """
+Visualize reconstruction results and reprojection error.
 
-from __future__ import annotations
+This script:
+1. Loads a reconstruction volume (reconstruction.pt).
+2. Loads projection pairs (pair_*.h5) from a data directory.
+3. Reprojects the reconstruction using the lightfield 'A' from the pairs.
+4. Compares the reprojected image with the target image 'b'.
+5. Generates comparison plots (MSE/PSNR) in viz/reprojection/.
+6. Generates a grid of Z-slices of the reconstruction volume in viz/.
+"""
 
 import argparse
 import sys
 from pathlib import Path
-from typing import Optional
-
 import numpy as np
 import torch
-
-# Matplotlib is used for deterministic, headless rendering.
+import h5py
 import matplotlib
-
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas  # noqa: E402
+import matplotlib.pyplot as plt
+import logging
+import re
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def _resolve_reconstruction_path(p: Path) -> Path:
     """Accept either a reconstruction.pt file or a directory containing one."""
@@ -51,359 +36,250 @@ def _resolve_reconstruction_path(p: Path) -> Path:
         raise FileNotFoundError(f"No reconstruction.pt found in directory: {p}")
     return p
 
-
-def _load_reconstruction_volume(pt_path: Path) -> np.ndarray:
+def _load_reconstruction_volume(pt_path: Path) -> torch.Tensor:
+    logger.info(f"Loading reconstruction from {pt_path}")
     data = torch.load(pt_path, map_location="cpu")
     if isinstance(data, dict) and "reconstruction" in data:
         vol = data["reconstruction"]
     else:
-        # Fallback: some pipelines may save the tensor directly.
         vol = data
-    return vol.detach().cpu().float().numpy()
+    return vol.detach().cpu().float()
 
+def _load_pair(h5_path: Path):
+    with h5py.File(h5_path, 'r') as f:
+        # A is (X, Y, Z), b is (Y, X)
+        A = torch.from_numpy(f['A'][:]).float()
+        b = torch.from_numpy(f['b'][:]).float()
+    return A, b
 
-def _load_ghost_union(input_dir: Path, target_shape: tuple[int, int, int]) -> Optional[np.ndarray]:
-    """Union ghost volumes under input_dir/ghost_volume/*.pt into a single float32 volume."""
-    ghost_dir = input_dir / "ghost_volume"
-    if not ghost_dir.exists() or not ghost_dir.is_dir():
-        return None
+def project_and_compare(vol: torch.Tensor, A: torch.Tensor, b: torch.Tensor):
+    # vol: (X, Y, Z)
+    # A: (X, Y, Z)
+    # b: (Y, X)
+    
+    # b_pred(y, x) = sum_z ( A(x, y, z) * vol(x, y, z) )
+    # Element-wise mult and sum over Z -> (X, Y)
+    
+    # Ensure shapes match (handle potential mismatches gracefully)
+    if A.shape != vol.shape:
+        logger.warning(f"Shape mismatch: A {A.shape} vs vol {vol.shape}. Truncating to common size.")
+        sx = min(A.shape[0], vol.shape[0])
+        sy = min(A.shape[1], vol.shape[1])
+        sz = min(A.shape[2], vol.shape[2])
+        A = A[:sx, :sy, :sz]
+        vol_use = vol[:sx, :sy, :sz]
+    else:
+        vol_use = vol
 
-    pt_files = sorted([p for p in ghost_dir.glob("*.pt") if p.is_file()])
-    if not pt_files:
-        return None
+    b_pred_xy = torch.sum(A * vol_use, dim=2) # (X, Y)
+    b_pred = b_pred_xy.T # (Y, X)
+    
+    # Metrics
+    diff = b - b_pred
+    mse = torch.mean(diff**2).item()
+    
+    # Robust dynamic range for PSNR
+    data_max = b.max().item()
+    if data_max <= 0: 
+        data_max = 1.0 # Avoid div by zero or log of zero if image is all zeros
+    
+    if mse <= 1e-12:
+        psnr = float('inf')
+    else:
+        psnr = 20 * np.log10(data_max / np.sqrt(mse))
+        
+    return b_pred, mse, psnr
 
-    union = np.zeros(target_shape, dtype=np.float32)
-    for p in pt_files:
-        d = torch.load(p, map_location="cpu")
-        if isinstance(d, dict):
-            if "ghost" in d:
-                t = d["ghost"]
-            elif "ghost_volume" in d:
-                t = d["ghost_volume"]
-            else:
-                tensor_like = None
-                for v in d.values():
-                    if torch.is_tensor(v):
-                        tensor_like = v
-                        break
-                if tensor_like is None:
-                    continue
-                t = tensor_like
-        else:
-            t = d
+def visualize_reprojection(b, b_pred, mse, psnr, out_path, pair_name):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Shared color scale for fair comparison
+    # We use robust min/max to avoid outliers skewing the plot
+    b_np = b.numpy()
+    pred_np = b_pred.numpy()
+    
+    vmin = min(np.percentile(b_np, 1), np.percentile(pred_np, 1))
+    vmax = max(np.percentile(b_np, 99), np.percentile(pred_np, 99))
+    
+    # Ensure sane range if image is empty
+    if vmax <= vmin:
+        vmin, vmax = 0, 1
 
-        arr = t.detach().cpu().float().numpy()
-        if arr.shape != target_shape:
-            raise ValueError(
-                f"Ghost volume shape mismatch for {p}: got {arr.shape}, expected {target_shape}"
-            )
-        union += arr
+    im0 = axes[0].imshow(b_np, cmap='viridis', vmin=vmin, vmax=vmax)
+    axes[0].set_title(f"Target {pair_name} (b)")
+    plt.colorbar(im0, ax=axes[0])
+    
+    im1 = axes[1].imshow(pred_np, cmap='viridis', vmin=vmin, vmax=vmax)
+    axes[1].set_title(f"Reprojection (A@x)\nMSE={mse:.2e}, PSNR={psnr:.2f} dB")
+    plt.colorbar(im1, ax=axes[1])
+    
+    plt.suptitle(f"Reprojection Comparison: {pair_name}")
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close(fig)
 
-    return union
+def visualize_slices(vol, out_path):
+    nz = vol.shape[2]
+    num_slices = 25
+    indices = np.linspace(0, nz - 1, num_slices, dtype=int)
 
+    ncols = int(np.ceil(np.sqrt(num_slices)))
+    nrows = int(np.ceil(num_slices / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows))
+    axes = np.asarray(axes).ravel()
+    
+    # Robust range for slices
+    vol_flat = vol.numpy().ravel()
+    if vol_flat.size > 0:
+        p99 = np.percentile(vol_flat, 99)
+        vmax = max(p99, 1e-6)
+    else:
+        vmax = 1.0
+        
+    for i, idx in enumerate(indices):
+        # Slice: vol[:, :, idx] -> (X, Y)
+        # Transpose to (Y, X) for imshow standard orientation
+        slice_data = vol[:, :, idx].numpy().T
+        
+        axes[i].imshow(slice_data, cmap='viridis', vmin=0, vmax=vmax)
+        axes[i].set_title(f"Z={idx}")
+        axes[i].axis('off')
 
-def _robust_vmax(vol: np.ndarray, p: float = 99.0) -> float:
-    finite = vol[np.isfinite(vol)]
-    if finite.size == 0:
-        return 1e-12
-    v = float(np.percentile(finite, p))
-    return max(v, 1e-12)
+    # Hide unused axes
+    for j in range(len(indices), len(axes)):
+        axes[j].axis('off')
+        
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close(fig)
 
+def numerical_sort_key(p: Path):
+    # Extract number from filename like pair_12.h5
+    numbers = re.findall(r'\d+', p.name)
+    if numbers:
+        return int(numbers[-1])
+    return p.name
 
-def _normalize01(x: np.ndarray) -> np.ndarray:
-    x = np.asarray(x, dtype=np.float32)
-    mn = float(np.nanmin(x))
-    mx = float(np.nanmax(x))
-    if not np.isfinite(mn) or not np.isfinite(mx) or mx <= mn:
-        return np.zeros_like(x, dtype=np.float32)
-    return (x - mn) / (mx - mn)
-
-
-def _dilate_bool(mask: np.ndarray, radius: int) -> np.ndarray:
-    """Binary dilation with a square structuring element (no scipy dependency)."""
-    if radius <= 0:
-        return mask
-    m = mask.astype(bool, copy=False)
-    out = m.copy()
-    for _ in range(radius):
-        # 8-neighborhood dilation implemented via shifts.
-        nbr = out.copy()
-        nbr[:-1, :] |= out[1:, :]
-        nbr[1:, :] |= out[:-1, :]
-        nbr[:, :-1] |= out[:, 1:]
-        nbr[:, 1:] |= out[:, :-1]
-        nbr[:-1, :-1] |= out[1:, 1:]
-        nbr[1:, 1:] |= out[:-1, :-1]
-        nbr[:-1, 1:] |= out[1:, :-1]
-        nbr[1:, :-1] |= out[:-1, 1:]
-        out = nbr
-    return out
-
-
-def _render_frame_xy(
-    density_xy: np.ndarray,
-    ghost_xy: Optional[np.ndarray],
-    *,
-    density_vmin: float,
-    density_vmax: float,
-    ghost_alpha: float,
-    ghost_thr: Optional[float],
-    ghost_global_max: Optional[float],
-    ghost_gamma: float,
-    ghost_boost: float,
-    ghost_min_alpha: float,
-    ghost_dilate: int,
-    title: str,
-    fig: plt.Figure,
-    ax: plt.Axes,
-    canvas: FigureCanvas,
-    add_colorbar: bool,
-    cbar_ax: Optional[plt.Axes],
-):
-    """Render a single XY density slice with optional ghost overlay.
-
-    The frame is drawn to an Agg canvas and returned as uint8 RGB.
-    """
-
-    ax.clear()
-
-    im = ax.imshow(
-        density_xy,
-        cmap="viridis",
-        vmin=density_vmin,
-        vmax=density_vmax,
-        origin="lower",
-        interpolation="nearest",
-    )
-
-    # Optional ghost overlay as magenta RGBA image.
-    if ghost_xy is not None and ghost_alpha > 0.0:
-        g = ghost_xy.astype(np.float32, copy=False)
-
-        # Normalize against a *global* scale so appearance is consistent across z.
-        # This avoids a common failure mode where each slice is normalized by its
-        # own min/max and ghost becomes nearly invisible.
-        if ghost_global_max is not None and ghost_global_max > 0:
-            g01 = (g / float(ghost_global_max)).clip(0.0, 1.0)
-        else:
-            g01 = _normalize01(g)
-
-        if ghost_thr is not None and ghost_global_max is not None:
-            thr_val = float(ghost_thr) * float(ghost_global_max)
-            g01 = np.where(g >= thr_val, g01, 0.0)
-
-        # Optional dilation to expand ghost region (more vivid/visible).
-        if ghost_dilate > 0:
-            m = _dilate_bool(g01 > 0.0, int(ghost_dilate))
-            g01 = np.where(m, g01, 0.0)
-
-        if np.any(g01 > 0):
-            # Boost + gamma to make small values visible.
-            gg = (g01 * float(ghost_boost)).clip(0.0, 1.0)
-            gg = np.power(gg, float(ghost_gamma))
-            # Ensure a minimum alpha so thin ghosts still show up.
-            gg = np.where(gg > 0, np.maximum(gg, float(ghost_min_alpha)), 0.0)
-
-            rgba = np.zeros((g.shape[0], g.shape[1], 4), dtype=np.float32)
-            rgba[..., 0] = 1.0  # R
-            rgba[..., 2] = 1.0  # B
-            rgba[..., 3] = (ghost_alpha * gg).clip(0.0, 1.0)  # A
-            ax.imshow(rgba, origin="lower", interpolation="nearest")
-
-    ax.set_title(title)
-    ax.set_xlabel("Y")
-    ax.set_ylabel("X")
-
-    if add_colorbar and cbar_ax is not None:
-        cbar_ax.clear()
-        cb = fig.colorbar(im, cax=cbar_ax)
-        cb.set_label("Density")
-
-    canvas.draw()
-
-    # Robust pixel readback across matplotlib versions.
-    try:
-        w, h = fig.canvas.get_width_height()
-        rgb = np.frombuffer(canvas.tostring_rgb(), dtype=np.uint8)
-        rgb = rgb.reshape((h, w, 3))
-        return rgb
-    except AttributeError:
-        # Newer matplotlib prefers RGBA buffer APIs.
-        buf = np.asarray(canvas.buffer_rgba())  # (H, W, 4), uint8
-        return buf[:, :, :3].copy()
-
-
-def _write_video(frames: list[np.ndarray], out_path: Path, fps: int) -> None:
-    """Write frames to MP4 using imageio if available; fallback to PNG sequence."""
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        import imageio.v2 as imageio  # type: ignore
-
-        # Be explicit about the ffmpeg backend. Otherwise imageio may pick a TIFF
-        # writer based on extension/installed plugins, which doesn't support fps.
-        with imageio.get_writer(str(out_path), fps=fps, format="FFMPEG") as w:
-            for fr in frames:
-                w.append_data(fr)
-        return
-    except Exception as e:
-        # Fallback: save PNG sequence so user still gets results.
-        seq_dir = out_path.with_suffix("")
-        seq_dir.mkdir(parents=True, exist_ok=True)
-        for i, fr in enumerate(frames):
-            png_path = seq_dir / f"frame_{i:04d}.png"
-            plt.imsave(png_path, fr)
-        print(f"[warn] Failed to write video {out_path} ({e}). Saved PNG sequence to {seq_dir}.")
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Save 2D slice videos (Z scan) from reconstruction.pt")
-    parser.add_argument(
-        "input",
-        nargs="?",
-        help="Path to reconstruction.pt OR a directory containing reconstruction.pt",
-    )
-    parser.add_argument(
-        "--input-dir",
-        type=str,
-        default=None,
-        help="Directory containing reconstruction.pt (alternative to positional input)",
-    )
-    parser.add_argument("--fps", type=int, default=20, help="Video frames-per-second")
-    parser.add_argument("--dpi", type=int, default=140, help="Render DPI")
-    parser.add_argument(
-        "--p99",
-        type=float,
-        default=99.0,
-        help="Percentile for robust density vmax (consistent across videos)",
-    )
-    parser.add_argument(
-        "--ghost-alpha",
-        type=float,
-        default=1.0,
-        help="Max alpha for magenta ghost overlay",
-    )
-    parser.add_argument(
-        "--ghost-dilate",
-        type=int,
-        default=2,
-        help="Binary dilation radius (in pixels) to expand ghost regions for visibility",
-    )
-    parser.add_argument(
-        "--ghost-gamma",
-        type=float,
-        default=0.5,
-        help="Gamma applied to ghost intensity (values <1 make faint ghosts brighter)",
-    )
-    parser.add_argument(
-        "--ghost-boost",
-        type=float,
-        default=6.0,
-        help="Multiply ghost intensity before gamma (higher makes ghost more vivid)",
-    )
-    parser.add_argument(
-        "--ghost-min-alpha",
-        type=float,
-        default=0.8,
-        help="Minimum alpha applied wherever ghost is present (0 disables)",
-    )
+def main():
+    parser = argparse.ArgumentParser(description="Visualize density slices and reprojection error.")
+    parser.add_argument("input", nargs="?", help="Path to reconstruction.pt or directory")
+    parser.add_argument("--data-dir", default=None, help="Directory containing pair_*.h5 files (Processed mode)")
+    
+    # Raw Data Mode
+    parser.add_argument("--raw-A-dir", default=None, help="Raw volume directory (e.g. data/raw/lightsheet_vol_6.9)")
+    parser.add_argument("--raw-b-dir", default=None, help="Raw image directory (e.g. data/raw/20um_imgs)")
+    parser.add_argument("--downsampling-rate", type=float, default=0.125, help="Downsampling rate for raw mode")
+    parser.add_argument("--scale-factor", type=float, default=8.0, help="Scale factor for raw mode")
+    
+    parser.add_argument("--output-dir", default=None, help="Output directory (default: <run_dir>/viz)")
+    parser.add_argument("--stride-pairs", type=int, default=1, help="Stride for processing pair files (default: 1)")
+    
     args = parser.parse_args()
-
-    if args.input_dir is not None:
-        input_path = Path(args.input_dir)
-    elif args.input:
+    
+    if args.input:
         input_path = Path(args.input)
     else:
+        # Auto-detect latest reconstruction
         recons = sorted(list(Path("result").glob("**/reconstruction.pt")))
         if not recons:
             print("No reconstruction.pt found in result/ and no input provided.")
             sys.exit(1)
         input_path = recons[-1]
-
-    input_path = input_path.expanduser().resolve()
-    pt_path = _resolve_reconstruction_path(input_path)
+        
+    pt_path = _resolve_reconstruction_path(input_path.expanduser().resolve())
     run_dir = pt_path.parent
-
-    vol = _load_reconstruction_volume(pt_path)
-    if vol.ndim != 3:
-        raise ValueError(f"Expected reconstruction volume to be 3D, got shape={vol.shape}")
-
-    X, Y, Z = vol.shape
-    print(f"Loaded reconstruction: shape={vol.shape}, dtype={vol.dtype}")
-
-    density_vmin = 0.0
-    density_vmax = _robust_vmax(vol, p=float(args.p99))
-
-    ghost = _load_ghost_union(run_dir, (X, Y, Z))
-    ghost_global_max = float(np.nanmax(ghost)) if ghost is not None and np.isfinite(ghost).any() else None
-    if ghost is None:
-        print("No ghost volume found (run_dir/ghost_volume/*.pt). Will generate density-only video.")
-
-    viz_dir = run_dir / "viz"
+    
+    if args.output_dir:
+        viz_dir = Path(args.output_dir)
+    else:
+        viz_dir = run_dir / "viz"
+    
     viz_dir.mkdir(parents=True, exist_ok=True)
+    reproj_dir = viz_dir / "reprojection"
+    reproj_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Load reconstruction
+    vol = _load_reconstruction_volume(pt_path)
+    logger.info(f"Reconstruction loaded. Shape: {vol.shape}, Max: {vol.max():.4f}")
+    
+    # 1. Reprojection Analysis
+    
+    # Check for Raw Mode
+    raw_mode = (args.raw_A_dir is not None and args.raw_b_dir is not None)
+    
+    if raw_mode:
+        from src.io.preprocess_pair import preprocess_one_pair
+        from src.io.raw_pairs import find_raw_pairs
+        
+        logger.info("Using Raw Data Mode for reprojection.")
+        pairs = find_raw_pairs(args.raw_A_dir, args.raw_b_dir)
+        
+        if not pairs:
+            logger.warning(f"No matching raw pairs found in {args.raw_A_dir}")
+        else:
+            pairs = pairs[::args.stride_pairs]
+            logger.info(f"Processing {len(pairs)} raw pairs (stride={args.stride_pairs})...")
+            
+            for p in pairs:
+                try:
+                    logger.info(f"Processing Raw Pair Index {p.idx}...")
+                    
+                    # On-the-fly preprocess
+                    A, b = preprocess_one_pair(
+                        vol_path=p.vol_path,
+                        img_path=p.img_path,
+                        downsampling_rate=args.downsampling_rate,
+                        scale_factor=args.scale_factor,
+                        device=torch.device("cpu") # Keep on CPU for visualization
+                    )
+                    
+                    b_pred, mse, psnr = project_and_compare(vol, A, b)
+                    out_name = f"target_image_compare_{p.idx}.png"
+                    visualize_reprojection(b, b_pred, mse, psnr, reproj_dir / out_name, f"Raw_Pair_{p.idx}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to process pair {p.idx}: {e}")
+                    
+    elif args.data_dir:
+        # Processed HDF5 Mode
+        data_dir = Path(args.data_dir)
+        if not data_dir.exists():
+            logger.error(f"Data directory not found: {data_dir}")
+            sys.exit(1)
 
-    # Mode -> ghost threshold fraction of global max.
-    # Use None for "no ghost" and also for "full ghost" (no thresholding).
-    modes = [
-        ("no_ghost", None),
-        ("ghost_full", None),
-        ("ghost_thr025", 0.25),
-        ("ghost_thr050", 0.50),
-    ]
+        pair_files = sorted(list(data_dir.glob("pair_*.h5")), key=numerical_sort_key)
+        
+        if not pair_files:
+            logger.warning(f"No pair_*.h5 files found in {data_dir}")
+        else:
+            pair_files = pair_files[::args.stride_pairs]
+            logger.info(f"Processing {len(pair_files)} pair files (stride={args.stride_pairs})...")
+            
+            # Process all pairs
+            for p_file in pair_files:
+                try:
+                    # Extract simple name/number
+                    stem = p_file.stem # pair_123
+                    parts = stem.split('_')
+                    num = parts[-1] if len(parts) > 1 else "0"
+                    
+                    logger.info(f"Processing {stem}...")
+                    A, b = _load_pair(p_file)
+                    b_pred, mse, psnr = project_and_compare(vol, A, b)
+                    
+                    out_name = f"target_image_compare_{num}.png"
+                    visualize_reprojection(b, b_pred, mse, psnr, reproj_dir / out_name, stem)
+                    
+                except Exception as e:
+                    logger.error(f"Failed to process {p_file}: {e}")
+    else:
+        logger.error("No data source provided. Use --data-dir (H5) or --raw-A-dir/--raw-b-dir (Raw).")
+        sys.exit(1)
 
-    # Create a single figure with a persistent cbar axis so colorbar scale is consistent.
-    # We redraw the colorbar only on the first frame for each mode.
-    fig = plt.Figure(figsize=(7.5, 6.5), dpi=int(args.dpi))
-    canvas = FigureCanvas(fig)
-    gs = fig.add_gridspec(1, 2, width_ratios=[20, 1])
-    ax = fig.add_subplot(gs[0, 0])
-    cax = fig.add_subplot(gs[0, 1])
-
-    for mode_name, thr in modes:
-        if mode_name != "no_ghost" and ghost is None:
-            # Skip overlay modes if ghost isn't available.
-            continue
-
-        frames: list[np.ndarray] = []
-        for z in range(Z):
-            density_xy = vol[:, :, z]
-
-            # IMPORTANT: never overlay ghost in no_ghost mode.
-            if mode_name == "no_ghost":
-                ghost_xy = None
-                ghost_thr = None
-            else:
-                ghost_xy = ghost[:, :, z] if ghost is not None else None
-                ghost_thr = thr
-
-            title = f"XY slice z={z}/{Z-1} | mode={mode_name}"
-            frame = _render_frame_xy(
-                density_xy,
-                ghost_xy,
-                density_vmin=density_vmin,
-                density_vmax=density_vmax,
-                ghost_alpha=float(args.ghost_alpha),
-                ghost_thr=ghost_thr,
-                ghost_global_max=ghost_global_max,
-                ghost_gamma=float(args.ghost_gamma),
-                ghost_boost=float(args.ghost_boost),
-                ghost_min_alpha=float(args.ghost_min_alpha),
-                ghost_dilate=int(args.ghost_dilate),
-                title=title,
-                fig=fig,
-                ax=ax,
-                canvas=canvas,
-                add_colorbar=(z == 0),
-                cbar_ax=cax,
-            )
-            frames.append(frame)
-
-        out_path = viz_dir / f"density_xy_{mode_name}.mp4"
-        _write_video(frames, out_path, fps=int(args.fps))
-        print(f"Saved {out_path} ({len(frames)} frames)")
-
-    plt.close(fig)
-
+    # 2. Volume Slices
+    logger.info("Generating volume slices...")
+    visualize_slices(vol, viz_dir / "reconstruction_slices.png")
+    logger.info(f"Visualization complete. Results in {viz_dir}")
 
 if __name__ == "__main__":
     main()

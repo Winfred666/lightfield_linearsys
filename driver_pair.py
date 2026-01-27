@@ -13,6 +13,8 @@ from src.core.linear_system_pair import LinearSystemPair
 from src.core.masked_system_pair import LinearSystemPairMasked
 from src.core.fista import FISTASolver
 from src.core.ista import ISTASolver
+from src.io.preprocess_pair import preprocess_one_pair
+from src.io.raw_pairs import find_raw_pairs, to_driver_file_dicts
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -31,7 +33,22 @@ def main():
     logger.info(f"Loaded configuration from {args.config}")
     
     # Extract config
-    data_dir = cfg['data']['data_dir']
+    data_dir = cfg['data'].get('data_dir')
+    raw_A_dir = cfg['data'].get('raw_A_dir')
+    raw_b_dir = cfg['data'].get('raw_b_dir')
+    downsampling_rate = cfg['data'].get('downsampling_rate')
+    scale_factor = cfg['data'].get('scale_factor', 8.0)
+    
+    use_raw = False
+    if raw_A_dir and raw_b_dir and downsampling_rate is not None:
+        use_raw = True
+        logger.info("Configuration points to raw data. Using on-the-fly preprocessing.")
+    elif data_dir:
+        logger.info("Configuration points to processed data_dir. Using pre-computed HDF5 files.")
+    else:
+        logger.error("Neither raw data config (raw_A_dir, raw_b_dir, downsampling_rate) nor data_dir provided.")
+        return
+
     output_dir = cfg['data']['output_dir']
     init_global_x_path = cfg['data'].get('init_global_x')
     max_pairs = cfg['data'].get('max_pairs')
@@ -71,12 +88,21 @@ def main():
     logger.info(f"Output directory: {output_dir_ts}")
     
     # 1. Find files
-    pattern = os.path.join(data_dir, "pair_*.h5")
-    # Natural sort
-    files = sorted(glob.glob(pattern), key=lambda x: int(re.search(r'pair_(\d+).h5', x).group(1)))
+    files = []
+    if use_raw:
+        pairs = find_raw_pairs(input_dir=raw_A_dir, img_dir=raw_b_dir, max_pairs=max_pairs)
+        files = to_driver_file_dicts(pairs)
+        logger.info(f"Found {len(files)} raw pairs (Volume+Image).")
+        
+    else:
+        pattern = os.path.join(data_dir, "pair_*.h5")
+        # Natural sort
+        found_files = sorted(glob.glob(pattern), key=lambda x: int(re.search(r'pair_(\d+).h5', x).group(1)))
+        files = [{'type': 'h5', 'path': f, 'id': int(re.search(r'pair_(\d+).h5', f).group(1))} for f in found_files]
+        logger.info(f"Found {len(files)} HDF5 pair files.")
     
     if not files:
-        logger.error(f"No files found matching {pattern}")
+        logger.error(f"No files found.")
         return
         
     if max_pairs:
@@ -84,8 +110,6 @@ def main():
         files = files[:max_pairs]
     else:
         logger.info(f"Processing all {len(files)} pairs.")
-        
-    logger.info(f"Found {len(files)} pair files.")
     
     # Global volume state, Try Initialize global x
     x_global = None
@@ -119,26 +143,46 @@ def main():
             continue
 
         try:
-            # Load batch HDF5 -> lists of A,b
+            # Load batch -> lists of A,b
             A_full_list = []
             b_list = []
             X = Y = Z = None
-            for f in batch_files:
-                with h5py.File(f, 'r') as hf:
-                    A_np = hf['A'][:]
-                    b_np = hf['b'][:]
-
-                A = torch.from_numpy(A_np)
-                b = torch.from_numpy(b_np)
+            
+            for item in batch_files:
+                if item['type'] == 'raw':
+                    # On-the-fly preprocess
+                    # Returns A, b on CPU (float32)
+                    A, b = preprocess_one_pair(
+                        vol_path=item['vol_path'],
+                        img_path=item['img_path'],
+                        downsampling_rate=downsampling_rate,
+                        scale_factor=scale_factor,
+                        device=torch.device(device) # Use compute device for heavy lifting (interpolation)
+                    )
+                    # Move to CPU for consistent processing flow (LinearSystemPair expects to handle device movement if needed, 
+                    # but typically we keep them on CPU until system construction or slicing)
+                    A = A.cpu()
+                    b = b.cpu()
+                else:
+                    # Load HDF5
+                    f = item['path']
+                    with h5py.File(f, 'r') as hf:
+                        A_np = hf['A'][:]
+                        b_np = hf['b'][:]
+                    A = torch.from_numpy(A_np)
+                    b = torch.from_numpy(b_np)
 
                 if A is None or b is None:
-                    logger.warning(f"Invalid data in {f}, skipping it.")
+                    logger.warning(f"Invalid data in {item}, skipping it.")
                     continue
 
                 if X is None:
                     X, Y, Z = A.shape
                 elif (X, Y, Z) != tuple(A.shape):
-                    raise ValueError(f"Shape mismatch in batch: expected {(X, Y, Z)}, got {tuple(A.shape)} for {f}")
+                    # For raw processing, shapes might vary slightly if cropping isn't perfectly consistent or if input vols vary.
+                    # However, usually we expect them to be consistent for a single reconstruction.
+                    # If slight mismatch, we might need to handle it, but for now strict check.
+                     raise ValueError(f"Shape mismatch in batch: expected {(X, Y, Z)}, got {tuple(A.shape)} for {item}")
 
                 A_full_list.append(A)
                 b_list.append(b)
@@ -277,11 +321,22 @@ def main():
                     ghost_dir = Path(output_dir_ts) / "ghost_volume"
                     ghost_dir.mkdir(parents=True, exist_ok=True)
                     ghost_path = ghost_dir / f"ghost_batch_{batch_idx+1}.pt"
+                    
+                    # Convert batch_files to list of strings for metadata
+                    batch_files_meta = []
+                    for bf in batch_files:
+                        if isinstance(bf, dict) and 'vol_path' in bf:
+                             batch_files_meta.append(f"{bf['vol_path']} + {bf['img_path']}")
+                        elif isinstance(bf, dict) and 'path' in bf:
+                             batch_files_meta.append(str(bf['path']))
+                        else:
+                             batch_files_meta.append(str(bf))
+
                     torch.save(
                         {
                             'ghost': ghost_vol,
                             'batch_index': batch_idx + 1,
-                            'pair_files': [str(p) for p in batch_files],
+                            'pair_files': batch_files_meta,
                             'valid_z_indices': valid_z_indices,
                             'ghost_eps': ghost_eps,
                         },
@@ -320,7 +375,10 @@ def main():
             gc.collect()
             
         except Exception as e:
-            logger.error(f"Failed to process {f}: {e}", exc_info=True)
+            item_desc = batch_files[0] if batch_files else "unknown"
+            if isinstance(item_desc, dict) and 'id' in item_desc:
+                item_desc = f"ID {item_desc['id']}"
+            logger.error(f"Failed to process batch {batch_idx+1} (starts with {item_desc}): {e}", exc_info=True)
             continue
 
     save_path = Path(output_dir_ts) / "reconstruction.pt"

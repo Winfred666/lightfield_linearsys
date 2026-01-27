@@ -4,7 +4,7 @@ data:
   data_dir: "data/processed"
   output_dir: "result/solve_pair/fista"
   max_pairs: null  # Set to null or a large number for full run
-  threshold_A: 0.10
+  threshold_A: 0.0001
   threshold_b: 0.8 # Threshold for filtering target b
 
 solver:

@@ -11,7 +11,168 @@ import argparse
 sys.path.append(os.path.join(os.path.dirname(__file__), "../.."))
 
 from src.io.readers import read_volume, read_image, scale_volume
+from src.io.raw_pairs import find_raw_pairs
 import time
+
+
+def save_pair_h5(h5_path: Path, A_cpu: torch.Tensor, b_cpu: torch.Tensor) -> None:
+    """Save a processed (A,b) pair to an HDF5 file.
+
+    Args:
+        h5_path: Destination file.
+        A_cpu: (X, Y, Z) tensor on CPU.
+        b_cpu: (Y, X) tensor on CPU.
+
+    Notes:
+        - Keeps the original chunking strategy used by this repo.
+        - Stores as float32.
+    """
+    h5_path = Path(h5_path)
+    h5_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Chunking strategies:
+    # A: (X, Y, Z). We often read sub-regions in X,Y. Z is relatively small.
+    chunks_A = (32, 32, int(A_cpu.shape[2]))
+    chunks_b = (32, 32)
+
+    with h5py.File(h5_path, 'w') as f:
+        f.create_dataset('A', data=A_cpu.numpy(), chunks=chunks_A, dtype='f4')
+        f.create_dataset('b', data=b_cpu.numpy(), chunks=chunks_b, dtype='f4')
+
+
+def preprocess_one_pair(
+    *,
+    vol_path: Path,
+    img_path: Path,
+    downsampling_rate: float,
+    scale_factor: float = 8.0,
+    device: torch.device | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Read+process a single (volume,image) pair into (A,b) tensors.
+
+    Returns:
+        (A_cpu, b_cpu)
+          - A_cpu: (X, Y, Z) float32 on CPU
+          - b_cpu: (Y, X) float32 on CPU
+
+    This function encapsulates all the heavy preprocessing previously embedded
+    inside preprocess_dataset().
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Read
+    vol = read_volume(vol_path)  # (X, Y, Z)
+    img = read_image(img_path)   # (Y, X) numpy
+    img = torch.from_numpy(img).float()
+
+    # Move to device
+    vol = vol.to(device)
+    img = img.to(device)
+
+    # Downsample Image (b)
+    if downsampling_rate != 1.0:
+        # img is (Y, X). Need (1, 1, Y, X) for interpolate
+        img_in = img.unsqueeze(0).unsqueeze(0)
+        img_down = F.interpolate(img_in, scale_factor=downsampling_rate, mode='bilinear', align_corners=False)
+        img = img_down.squeeze(0).squeeze(0)
+
+    # Calculate effective scale for Volume (A)
+    # We want to match the downsampled image space.
+    effective_vol_scale = scale_factor * downsampling_rate
+
+    # Optimization: Crop Volume BEFORE scaling to save memory.
+    X_v_orig, Y_v_orig, Z_v_orig = vol.shape
+    Y_i_curr, X_i_curr = img.shape
+
+    # Calculate target crop size in Low Res (Volume) domain for Y
+    # We target the downsampled image Y size.
+    # Image Y ~= Original Volume Y * effective_vol_scale.
+    target_Y_highres = min(Y_i_curr, int(Y_v_orig * effective_vol_scale))
+
+    if effective_vol_scale > 0:
+        target_Y_lowres = int(target_Y_highres / effective_vol_scale)
+    else:
+        target_Y_lowres = Y_v_orig
+
+    if target_Y_lowres < Y_v_orig:
+        start_y_v = (Y_v_orig - target_Y_lowres) // 2
+        vol = vol[:, start_y_v: start_y_v + target_Y_lowres, :]
+
+    # Chunked Scaling on GPU to avoid OOM
+    Z_chunks = []
+    with torch.no_grad():
+        for i in range(4):
+            z_start_in = i * 25
+            # For the first 3 chunks, we need +1 overlap for correct interpolation at the boundary
+            if i < 3:
+                z_end_in = (i + 1) * 25 + 1
+            else:
+                z_end_in = 100
+
+            vol_chunk = vol[:, :, z_start_in: z_end_in]
+            vol_chunk_scaled = scale_volume(vol_chunk, scale_factor=effective_vol_scale)
+
+            # Crop output to target Z size
+            target_z_chunk = int(25 * effective_vol_scale)
+            vol_chunk_scaled = vol_chunk_scaled[:, :, :target_z_chunk]
+
+            # Move to CPU immediately
+            Z_chunks.append(vol_chunk_scaled.cpu())
+
+            del vol_chunk
+            del vol_chunk_scaled
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+
+    # Concatenate on CPU
+    vol_scaled = torch.cat(Z_chunks, dim=2)  # On CPU
+
+    # Now dimensions
+    X_v, Y_v, Z_v = vol_scaled.shape
+
+    # Target Crop Size for X
+    target_X = min(X_v, X_i_curr)
+
+    # Crop Image in X (width) to match Vol
+    if X_i_curr > target_X:
+        start_x_i = (X_i_curr - target_X) // 2
+        img_cropped = img[:, start_x_i: start_x_i + target_X]
+    else:
+        img_cropped = img
+
+    # Crop Image in Y (height) to match Vol
+    target_Y = min(Y_v, img_cropped.shape[0])
+    if img_cropped.shape[0] > target_Y:
+        start_y_i = (img_cropped.shape[0] - target_Y) // 2
+        img_cropped = img_cropped[start_y_i: start_y_i + target_Y, :]
+
+    # Crop Volume in X if needed
+    if X_v > target_X:
+        start_x_v = (X_v - target_X) // 2
+        vol_cropped = vol_scaled[start_x_v: start_x_v + target_X, :, :]
+    else:
+        vol_cropped = vol_scaled
+
+    # Crop Volume in Y if needed
+    if vol_cropped.shape[1] > target_Y:
+        start_y_v = (vol_cropped.shape[1] - target_Y) // 2
+        vol_cropped = vol_cropped[:, start_y_v: start_y_v + target_Y, :]
+
+    # Check alignment
+    if img_cropped.shape[1] != vol_cropped.shape[0] or img_cropped.shape[0] != vol_cropped.shape[1]:
+        print(f"Shape mismatch! Img: {img_cropped.shape}, Vol: {vol_cropped.shape}")
+        min_x = min(img_cropped.shape[1], vol_cropped.shape[0])
+        min_y = min(img_cropped.shape[0], vol_cropped.shape[1])
+        img_cropped = img_cropped[:min_y, :min_x]
+        vol_cropped = vol_cropped[:min_x, :min_y, :]
+
+    # Move img to CPU
+    img_cropped_cpu = img_cropped.cpu()
+    vol_cropped_cpu = vol_cropped  # Already on CPU
+
+    # Normalize dtypes for saving/consumers
+    return vol_cropped_cpu.float().contiguous(), img_cropped_cpu.float().contiguous()
 
 def check_dimensions():
     """
@@ -71,168 +232,34 @@ def preprocess_dataset(output_dir, input_dir, img_dir, downsampling_rate, scale_
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    input_dir = Path(input_dir)
-    img_dir = Path(img_dir)
-    
-    # Find indices
-    vol_files = sorted(list(input_dir.glob("Interp_Vol_ID_*.pt")))
-    if not vol_files:
-         print(f"No volume files found in {input_dir}")
-         return
+    pairs = find_raw_pairs(input_dir=input_dir, img_dir=img_dir)
+    if not pairs:
+        print(f"No matching raw pairs found in {input_dir} and {img_dir}")
+        return
 
-    indices = []
-    for p in vol_files:
-        try:
-            # Name format: Interp_Vol_ID_{idx}.pt
-            idx_str = p.stem.split('_')[-1]
-            indices.append(int(idx_str))
-        except ValueError:
-            pass
-            
-    indices = sorted(indices)
-    print(f"Found {len(indices)} pairs. Indices: {indices[0]} to {indices[-1]}")
-    
-    for idx in indices:
-        vol_name = f"Interp_Vol_ID_{idx}.pt"
-        img_name = f"1scan ({idx}).tif"
-        
-        vol_path = input_dir / vol_name
-        img_path = img_dir / img_name
-        
-        if not vol_path.exists() or not img_path.exists():
-            print(f"Missing pair for index {idx}. Skipping.")
-            continue
+    print(f"Found {len(pairs)} pairs. Indices: {pairs[0].idx} to {pairs[-1].idx}")
+
+    for pair in pairs:
+        idx = pair.idx
+        vol_path = pair.vol_path
+        img_path = pair.img_path
             
         print(f"Processing index {idx}...")
         t0 = time.time()
-        
-        # Read
-        vol = read_volume(vol_path) # (X, Y, Z)
-        img = read_image(img_path) # (Y, X) numpy
-        img = torch.from_numpy(img).float()
-        
-        # Move to device
-        vol = vol.to(device)
-        img = img.to(device)
 
-        # Downsample Image (b)
-        if downsampling_rate != 1.0:
-            # img is (Y, X). Need (1, 1, Y, X) for interpolate
-            img_in = img.unsqueeze(0).unsqueeze(0)
-            img_down = F.interpolate(img_in, scale_factor=downsampling_rate, mode='bilinear', align_corners=False)
-            img = img_down.squeeze(0).squeeze(0)
-        
-        # Calculate effective scale for Volume (A)
-        # We want to match the downsampled image space.
-        effective_vol_scale = scale_factor * downsampling_rate
-        
-        # Optimization: Crop Volume BEFORE scaling to save memory.
-        
-        # Dimensions check
-        X_v_orig, Y_v_orig, Z_v_orig = vol.shape
-        Y_i_curr, X_i_curr = img.shape
-        
-        # Calculate target crop size in Low Res (Volume) domain for Y
-        # We target the downsampled image Y size.
-        # Image Y ~= Original Volume Y * effective_vol_scale.
-        target_Y_highres = min(Y_i_curr, int(Y_v_orig * effective_vol_scale))
-        
-        if effective_vol_scale > 0:
-            target_Y_lowres = int(target_Y_highres / effective_vol_scale)
-        else:
-            target_Y_lowres = Y_v_orig
-        
-        if target_Y_lowres < Y_v_orig:
-            start_y_v = (Y_v_orig - target_Y_lowres) // 2
-            vol = vol[:, start_y_v : start_y_v + target_Y_lowres, :]
-            
-        # Chunked Scaling on GPU to avoid OOM
-        Z_chunks = []
-        with torch.no_grad():
-            for i in range(4):
-                z_start_in = i * 25
-                # For the first 3 chunks, we need +1 overlap for correct interpolation at the boundary
-                if i < 3:
-                    z_end_in = (i + 1) * 25 + 1
-                else:
-                    z_end_in = 100
-                    
-                # Slice input (already cropped in Y)
-                vol_chunk = vol[:, :, z_start_in : z_end_in] 
-                
-                # Scale
-                vol_chunk_scaled = scale_volume(vol_chunk, scale_factor=effective_vol_scale)
-                
-                # Crop output to target Z size
-                # 25 original slices * effective_scale
-                target_z_chunk = int(25 * effective_vol_scale)
-                
-                vol_chunk_scaled = vol_chunk_scaled[:, :, :target_z_chunk]
-                
-                # Move to CPU immediately
-                Z_chunks.append(vol_chunk_scaled.cpu())
-                
-                del vol_chunk
-                del vol_chunk_scaled
-                torch.cuda.empty_cache()
-        
-        # Concatenate on CPU
-        vol_scaled = torch.cat(Z_chunks, dim=2) # On CPU
-        
-        # Now dimensions
-        X_v, Y_v, Z_v = vol_scaled.shape
-        
-        # Target Crop Size for X
-        target_X = min(X_v, X_i_curr)
-        
-        # Crop Image in X (width) to match Vol
-        if X_i_curr > target_X:
-            start_x_i = (X_i_curr - target_X) // 2
-            img_cropped = img[:, start_x_i : start_x_i + target_X]
-        else:
-            img_cropped = img
-            
-        # Crop Image in Y (height) to match Vol
-        target_Y = min(Y_v, img_cropped.shape[0])
-        if img_cropped.shape[0] > target_Y:
-            start_y_i = (img_cropped.shape[0] - target_Y) // 2
-            img_cropped = img_cropped[start_y_i : start_y_i + target_Y, :]
-            
-        # Crop Volume in X if needed
-        if X_v > target_X:
-             start_x_v = (X_v - target_X) // 2
-             vol_cropped = vol_scaled[start_x_v : start_x_v + target_X, :, :]
-        else:
-             vol_cropped = vol_scaled
+        # Read + process to CPU tensors
+        vol_cropped_cpu, img_cropped_cpu = preprocess_one_pair(
+            vol_path=vol_path,
+            img_path=img_path,
+            downsampling_rate=downsampling_rate,
+            scale_factor=scale_factor,
+            device=device,
+        )
 
-        # Crop Volume in Y if needed
-        if vol_cropped.shape[1] > target_Y:
-             start_y_v = (vol_cropped.shape[1] - target_Y) // 2
-             vol_cropped = vol_cropped[:, start_y_v : start_y_v + target_Y, :]
-             
-        # Check alignment
-        if img_cropped.shape[1] != vol_cropped.shape[0] or img_cropped.shape[0] != vol_cropped.shape[1]:
-             print(f"Shape mismatch! Img: {img_cropped.shape}, Vol: {vol_cropped.shape}")
-             min_x = min(img_cropped.shape[1], vol_cropped.shape[0])
-             min_y = min(img_cropped.shape[0], vol_cropped.shape[1])
-             img_cropped = img_cropped[:min_y, :min_x]
-             vol_cropped = vol_cropped[:min_x, :min_y, :]
-
-        # Move img to CPU
-        img_cropped_cpu = img_cropped.cpu()
-        vol_cropped_cpu = vol_cropped # Already on CPU
-        
         # Save to separate HDF5 file
         h5_path = output_dir / f"pair_{idx}.h5"
-        
-        with h5py.File(h5_path, 'w') as f:
-            # Chunking strategies:
-            # A: (X, Y, Z). We often read sub-regions in X,Y. Z is relatively small.
-            chunks_A = (32, 32, vol_cropped_cpu.shape[2])
-            chunks_b = (32, 32)
-            
-            f.create_dataset('A', data=vol_cropped_cpu.numpy(), chunks=chunks_A, dtype='f4')
-            f.create_dataset('b', data=img_cropped_cpu.numpy(), chunks=chunks_b, dtype='f4')
+
+        save_pair_h5(h5_path=h5_path, A_cpu=vol_cropped_cpu, b_cpu=img_cropped_cpu)
             
         print(f"Saved {h5_path}. Time: {time.time()-t0:.2f}s")
 
