@@ -338,8 +338,8 @@ def preprocess_points_from_raw(
       - Intended for small/moderate number of pairs. For very large datasets,
         intermediate HDF5 pair files may still be preferable.
     """
-    from src.io.preprocess_pair import preprocess_one_pair
-    from src.io.raw_pairs import find_raw_pairs
+    from LF_linearsys.io.preprocess_pair import preprocess_one_pair
+    from LF_linearsys.io.raw_pairs import find_raw_pairs
 
     pairs = find_raw_pairs(input_dir=input_dir, img_dir=img_dir, max_pairs=max_pairs)
     if not pairs:
@@ -349,37 +349,26 @@ def preprocess_points_from_raw(
     logger.info("Using device: %s", device)
     logger.info("Found %d raw pairs to process.", len(pairs))
 
-    A_list: list[torch.Tensor] = []
-    b_list: list[torch.Tensor] = []
-
-    for j, pair in enumerate(pairs):
-        idx = pair.idx
-        vol_path = pair.vol_path
-        im_path = pair.img_path
-
-        t0 = time.time()
-        A_cpu, b_cpu = preprocess_one_pair(
-            vol_path=vol_path,
-            img_path=im_path,
-            downsampling_rate=downsampling_rate,
-            scale_factor=scale_factor,
-            device=device,
-        )
-
-        # Keep on CPU
-        A_list.append(A_cpu)
-        b_list.append(b_cpu)
-
-        if (j % log_every_pairs == 0) or (j == len(pairs) - 1):
-            logger.info("Processed raw pair %d/%d (idx=%d) in %s", j + 1, len(pairs), idx, _fmt_time(time.time() - t0))
-
-    if not A_list:
-        raise RuntimeError("No valid raw pairs were processed.")
-
-    # Pack by temporarily writing to an in-memory pseudo 'pair list' interface.
-    # We simply reuse the exact same stacking layout: A_m is (X,Y,Z), b_m is (Y,X).
-    X_dim, Y_dim, Z_dim = A_list[0].shape
-    num_pairs = len(A_list)
+    # Determine dimensions from the first pair only.
+    # (We expect all pairs to share the same (X,Y,Z) after preprocessing.)
+    t_dim0 = time.time()
+    A0_cpu, b0_cpu = preprocess_one_pair(
+        vol_path=pairs[0].vol_path,
+        img_path=pairs[0].img_path,
+        downsampling_rate=downsampling_rate,
+        scale_factor=scale_factor,
+        device=device,
+    )
+    X_dim, Y_dim, Z_dim = A0_cpu.shape
+    num_pairs = len(pairs)
+    logger.info(
+        "Raw-mode dimensions: X=%d Y=%d Z=%d (from idx=%d) in %s",
+        X_dim,
+        Y_dim,
+        Z_dim,
+        pairs[0].idx,
+        _fmt_time(time.time() - t_dim0),
+    )
 
     # Generate all coordinates
     xx = torch.arange(X_dim)
@@ -423,17 +412,46 @@ def preprocess_points_from_raw(
                 {"idx": b_idx, "coords": batch_coords_list[k], "slice": (s, e), "A": A_out, "b": b_out}
             )
 
-        # Fill buffers by gathering from tensors directly
-        for m in range(num_pairs):
-            A_m = A_list[m]
-            b_m = b_list[m]
+        # Stream over pairs (do NOT keep all A/b in memory).
+        # This is analogous to pack_points_from_pair_h5() but with preprocess_one_pair() as the reader.
+        for m, pair in enumerate(pairs):
+            t_pair0 = time.time()
+            A_cpu, b_cpu = preprocess_one_pair(
+                vol_path=pair.vol_path,
+                img_path=pair.img_path,
+                downsampling_rate=downsampling_rate,
+                scale_factor=scale_factor,
+                device=device,
+            )
+
+            if A_cpu.shape != (X_dim, Y_dim, Z_dim):
+                raise ValueError(
+                    f"Inconsistent A shape for idx={pair.idx}: got {tuple(A_cpu.shape)} expected {(X_dim, Y_dim, Z_dim)}"
+                )
+
             # gather for pass
-            A_pass = A_m[pass_x, pass_y, :].to(dtype)
-            b_pass = b_m[pass_y, pass_x].to(dtype)
+            A_pass = A_cpu[pass_x, pass_y, :].to(dtype)
+            b_pass = b_cpu[pass_y, pass_x].to(dtype)
+
             for k in range(current_pass_batches):
                 s, e = buffers[k]["slice"]
                 buffers[k]["A"][:, m, :].copy_(A_pass[s:e])
                 buffers[k]["b"][:, m].copy_(b_pass[s:e])
+
+            if (m % log_every_pairs == 0) or (m == num_pairs - 1):
+                logger.info(
+                    "Pass %d/%d | pair %d/%d (idx=%d) | total=%s",
+                    p_idx + 1,
+                    num_passes,
+                    m + 1,
+                    num_pairs,
+                    pair.idx,
+                    _fmt_time(time.time() - t_pair0),
+                )
+
+            del A_cpu, b_cpu, A_pass, b_pass
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
 
         for k in range(current_pass_batches):
             buf = buffers[k]
@@ -447,216 +465,10 @@ def preprocess_points_from_raw(
                 full_dims=(X_dim, Y_dim, Z_dim),
             )
             written.append(out_file)
+            logger.info("Saved %s (A shape: %s).", out_file, tuple(buf["A"].shape))
 
     return written
 
-def preprocess_points_optimized(
-    data_dir: str = "data/processed",
-    output_dir: str = "data/points",
-    batch_size: int = 10000,
-    batches_per_pass: int = 1,
-    limit_batches: Optional[int] = None,
-    save_dtype: str = "float32",
-    log_every_pairs: int = 10,
-    sync_timing: bool = False,
-):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
-
-    out_path = Path(output_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
-    
-    try:
-        X_dim, Y_dim, Z_dim, files = get_dimensions(data_dir)
-    except Exception as e:
-        logger.error(str(e))
-        return
-
-    num_pairs = len(files)
-    logger.info(f"Found {num_pairs} pair files. Dimensions: X={X_dim}, Y={Y_dim}, Z={Z_dim}")
-    
-    # Generate all coordinates
-    xx = torch.arange(X_dim)
-    yy = torch.arange(Y_dim)
-    grid_x, grid_y = torch.meshgrid(xx, yy, indexing='ij')
-    
-    # Flatten
-    coords = torch.stack([grid_x.flatten(), grid_y.flatten()], dim=1) # (N_points, 2)
-    total_points = coords.shape[0]
-    
-    num_batches = (total_points + batch_size - 1) // batch_size
-    
-    if limit_batches is not None and limit_batches < num_batches:
-        logger.info(f"Limiting to {limit_batches} batches out of {num_batches}.")
-        num_batches = limit_batches
-        
-    logger.info(f"Total points: {total_points}. Batch size: {batch_size}. Total batches to process: {num_batches}")
-    logger.info(f"Batches per pass: {batches_per_pass}")
-    logger.info(
-        "Implementation: per-pass spatial slicing from multiple HDF5 files."
-    )
-    
-    # Outer loop: Passes
-    num_passes = (num_batches + batches_per_pass - 1) // batches_per_pass
-    
-    for p_idx in range(num_passes):
-        pass_start_batch = p_idx * batches_per_pass
-        pass_end_batch = min(pass_start_batch + batches_per_pass, num_batches)
-        
-        current_pass_batches = pass_end_batch - pass_start_batch
-        
-        logger.info(f"=== Starting Pass {p_idx+1}/{num_passes} (Batches {pass_start_batch} to {pass_end_batch-1}) ===")
-        t_pass_start = time.time()
-
-        # Build one contiguous coord list for this pass.
-        pass_coords, slices, batch_coords_list = _build_pass_index(
-            coords=coords,
-            batch_size=batch_size,
-            pass_start_batch=pass_start_batch,
-            pass_end_batch=pass_end_batch,
-        )
-        
-        # Determine Bounding Box for Slicing
-        pass_x = pass_coords[:, 0]
-        pass_y = pass_coords[:, 1]
-        min_x, max_x = pass_x.min().item(), pass_x.max().item()
-        min_y, max_y = pass_y.min().item(), pass_y.max().item()
-        
-        # Pre-allocate CPU output per batch
-        dtype = torch.float16 if save_dtype.lower() in {"fp16", "float16"} else torch.float32
-
-        # Allocate pinned CPU staging buffers if using CUDA
-        stage_pin = device.type == "cuda"
-        A_stage = torch.empty((pass_coords.shape[0], Z_dim), dtype=dtype, pin_memory=stage_pin)
-        b_stage = torch.empty((pass_coords.shape[0],), dtype=dtype, pin_memory=stage_pin)
-
-        buffers = []
-        for k in range(current_pass_batches):
-            b_idx, s, e = slices[k]
-            B_pts = e - s
-            A_out = torch.empty((B_pts, num_pairs, Z_dim), dtype=dtype)
-            b_out = torch.empty((B_pts, num_pairs), dtype=dtype)
-            buffers.append(
-                {
-                    "idx": b_idx,
-                    "coords": batch_coords_list[k],
-                    "slice": (s, e),
-                    "A": A_out,
-                    "b": b_out,
-                }
-            )
-            
-        # Iterate over pair files
-        for f_idx, f_path in enumerate(files):
-            try:
-                t_pair0 = time.time()
-                
-                with h5py.File(f_path, 'r') as f_h5:
-                    # Read only the bounding box slice from HDF5
-                    # A shape (X, Y, Z)
-                    # b shape (Y, X) - Note this convention from preprocess_pair!
-                    
-                    A_ds = f_h5['A']
-                    b_ds = f_h5['b']
-                    
-                    # Slicing
-                    A_slice_np = A_ds[min_x:max_x+1, min_y:max_y+1, :]
-                    b_slice_np = b_ds[min_y:max_y+1, min_x:max_x+1] # b is (Y, X)
-                
-                t_load = time.time()
-                
-                # Convert to tensor
-                A_slice = torch.from_numpy(A_slice_np)
-                b_slice = torch.from_numpy(b_slice_np)
-                
-                # Move to GPU for gathering
-                if device.type == "cuda":
-                    A_slice = A_slice.pin_memory()
-                    b_slice = b_slice.pin_memory()
-                    A_slice = A_slice.to(device, non_blocking=True)
-                    b_slice = b_slice.to(device, non_blocking=True)
-                    
-                    # Indices for gathering relative to slice
-                    # pass_x is global. local_x = pass_x - min_x
-                    local_x = (pass_x - min_x).to(device, non_blocking=True)
-                    local_y = (pass_y - min_y).to(device, non_blocking=True)
-                else:
-                    local_x = pass_x - min_x
-                    local_y = pass_y - min_y
-
-                t_h2d = time.time()
-                
-                # Gather
-                # A_slice is (W_slice, H_slice, Z) -> (X, Y, Z)
-                # local_x corresponds to dim 0 (X), local_y to dim 1 (Y)
-                A_pass = A_slice[local_x, local_y, :]
-                
-                # b_slice is (H_slice, W_slice) -> (Y, X)
-                # local_y corresponds to dim 0 (Y), local_x to dim 1 (X)
-                b_pass = b_slice[local_y, local_x]
-
-                t_gather = time.time()
-
-                # D2H
-                A_stage.copy_(A_pass.to(dtype), non_blocking=True)
-                b_stage.copy_(b_pass.to(dtype), non_blocking=True)
-
-                t_d2h = time.time()
-
-                # Scatter to batches
-                for k in range(current_pass_batches):
-                    s, e = buffers[k]["slice"]
-                    buffers[k]["A"][:, f_idx, :].copy_(A_stage[s:e])
-                    buffers[k]["b"][:, f_idx].copy_(b_stage[s:e])
-
-                t_done = time.time()
-
-                if (f_idx % log_every_pairs == 0) or (f_idx == num_pairs - 1):
-                    logger.info(
-                        "Pass %d | pair %d/%d | load_slice=%s H2D=%s gather=%s D2H=%s scatter=%s total=%s",
-                        p_idx + 1,
-                        f_idx + 1,
-                        num_pairs,
-                        _fmt_time(t_load - t_pair0),
-                        _fmt_time(t_h2d - t_load),
-                        _fmt_time(t_gather - t_h2d),
-                        _fmt_time(t_d2h - t_gather),
-                        _fmt_time(t_done - t_d2h),
-                        _fmt_time(t_done - t_pair0),
-                    )
-                
-                del A_slice, b_slice, A_slice_np, b_slice_np
-                
-            except Exception as e:
-                logger.error(f"Error processing pair {f_path}: {e}")
-        
-        # Save Batches
-        logger.info("Saving batches for this pass...")
-        t_save0 = time.time()
-        for k in range(current_pass_batches):
-            buf = buffers[k]
-            b_idx = buf['idx']
-
-            A_batch = buf["A"]
-            b_batch = buf["b"]
-            
-            out_file = out_path / f"points_batch_{b_idx:04d}.pt"
-            save_data = {
-                'A': A_batch,
-                'b': b_batch,
-                'coords': buf['coords'],
-                'batch_index': b_idx,
-                'full_dims': (X_dim, Y_dim, Z_dim)
-            }
-            torch.save(save_data, out_file)
-            logger.info(f"Saved {out_file} (A shape: {A_batch.shape}).")
-            
-            buffers[k] = None
-            
-        logger.info("Pass %d | saving time: %s", p_idx + 1, _fmt_time(time.time() - t_save0))
-        logger.info(f"Pass {p_idx+1} completed in {time.time()-t_pass_start:.2f}s")
-        gc.collect()
-        torch.cuda.empty_cache()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

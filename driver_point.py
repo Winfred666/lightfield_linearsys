@@ -9,15 +9,16 @@ import sys
 import os
 import time
 from datetime import datetime
+import gc
 
 # Ensure src is in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from src.core.point_system import PointLinearSystem
-from core.batched_newton_activeset import BatchedRegNewtonASSolver
-from src.core.batched_ista import BatchedISTASolver
-from src.utils.volume2mesh import export_volume_to_obj
-from src.io.preprocess_point import preprocess_points_from_raw
+from LF_linearsys.core.point_system import PointLinearSystem
+from LF_linearsys.core.batched_newton_activeset import BatchedRegNewtonASSolver
+from LF_linearsys.core.batched_ista import BatchedISTASolver
+from LF_linearsys.utils.volume2mesh import export_volume_to_obj
+from LF_linearsys.io.preprocess_point import preprocess_points_from_raw
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(processName)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -52,7 +53,7 @@ def init_worker(x_global_tensor, log_queue):
 
 def process_file(args):
     """Worker function to process a single points file."""
-    file_path, gpu_id, cfg = args
+    file_path, gpu_id, cfg, output_dir = args
     global shared_x_global
     
     try:
@@ -69,7 +70,6 @@ def process_file(args):
         A_full = data['A']
         b_full = data['b']
         coords_full = data['coords'] # (N, 2)
-        batch_idx = data.get('batch_index', 0)
         
         total_points = A_full.shape[0]
         # Solver batch size (sub-batch within the file to fit in GPU memory)
@@ -96,7 +96,6 @@ def process_file(args):
 
             # Create Solver
             solver_type = cfg['solver'].get('type', 'fista')
-            output_dir = Path(cfg['data']['output_dir'])
             
             common_params = {
                 'lambda_reg': cfg['solver']['lambda_reg'],
@@ -113,7 +112,13 @@ def process_file(args):
                 raise ValueError(f"Unknown solver type: {solver_type}")
             
             # Solve
-            x_hat_sub = solver.solve() # Expected (B_sub, Z)
+            # Only plot / record loss curve periodically to reduce overhead.
+            # Pass tag=None to disable history/plot inside the solver.
+            if (i % 5) == 0:
+                solve_tag = f"{file_path.stem}_b{i:04d}"
+            else:
+                solve_tag = None
+            x_hat_sub = solver.solve(tag=solve_tag) # Expected (B_sub, Z)
             
             # Move result to CPU
             x_hat_cpu = x_hat_sub.detach().cpu()
@@ -123,16 +128,21 @@ def process_file(args):
             # We assume unique coordinates across batches as stated by user.
             shared_x_global[coords_sub[:, 0], coords_sub[:, 1], :] = x_hat_cpu
             
-            # Clean up GPU memory
-            del system, solver, x_hat_sub
-            torch.cuda.empty_cache()
+            # --- hard cleanup ---
+            del x_hat_cpu, x_hat_sub
+            del solver
+            del system
+            del A_sub, b_sub, coords_sub
 
-        logger.info(f"Finished {file_path.name} on {device}")
+            torch.cuda.empty_cache()
+            gc.collect()
+
+            logger.info(f"Finished batch {i + 1}/{num_sub_batches} of {file_path.name} on {device}")
 
         return f"Finished {file_path.name} on {device}"
         
     except Exception as e:
-        logger.error(f"Error processing {file_path}: {e}")
+        logger.exception(f"Error processing {file_path}")  # includes traceback
         return f"Error processing {file_path.name}: {e}"
 
 def main():
@@ -156,10 +166,10 @@ def main():
     # Timestamped output folder + file logging, mirroring driver_pair.py
     output_dir = Path(cfg['data']['output_dir'])
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    output_dir_ts = output_dir / timestamp
-    output_dir_ts.mkdir(parents=True, exist_ok=True)
+    output_dir = output_dir / timestamp
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    log_file_path = output_dir_ts / "run.log"
+    log_file_path = output_dir / "run.log"
 
     # --- Multiprocessing-safe logging ---
     # All workers send LogRecords to this queue; the parent writes them to file.
@@ -179,7 +189,7 @@ def main():
     root_logger.addHandler(logging.handlers.QueueHandler(log_queue))
 
     logger.info(f"Loaded configuration from {args.config}")
-    logger.info(f"Output directory: {output_dir_ts}")
+    logger.info(f"Output directory: {output_dir}")
     
     # --- File Discovery (Raw vs Processed) ---
     raw_A_dir = cfg['data'].get('raw_A_dir')
@@ -189,7 +199,7 @@ def main():
         
         # Use a subfolder in the run directory for the temporary batch files
         # This keeps the original data directory clean
-        cache_dir = output_dir_ts / "points_cache"
+        cache_dir = output_dir / "points_cache"
         
         # Default batch size for files (not to be confused with solver batch_size)
         # We try to infer from config or use a reasonable default.
@@ -263,7 +273,7 @@ def main():
     for i, f in enumerate(files):
         # Round-robin assignment of GPUs
         gpu_id = i % num_gpus
-        tasks.append((f, gpu_id, cfg))
+        tasks.append((f, gpu_id, cfg, output_dir))
         
     t0 = time.time()
     

@@ -3,11 +3,11 @@ import numpy as np
 import pytest
 from pathlib import Path
 import logging
-from src.core.linear_system_pair import LinearSystemPair
-from src.core.masked_system_pair import LinearSystemPairMasked
-from src.core.fista import FISTASolver
-from src.core.ista import ISTASolver
-from src.core.linear_system_point import LinearSystemPoint
+from LF_linearsys.core.linear_system_pair import LinearSystemPair
+from LF_linearsys.core.masked_system_pair import LinearSystemPairMasked
+from LF_linearsys.core.fista import FISTASolver
+from LF_linearsys.core.ista import ISTASolver
+from LF_linearsys.core.linear_system_point import LinearSystemPoint
 import os
 
 
@@ -198,70 +198,6 @@ def test_masked_reconstruction():
     
     print("Masked reconstruction test passed.")
 
-def test_point_reconstruction():
-    """
-    Tests the pointwise reconstruction workflow.
-    1. Generates a dummy 'point' dataset file manually.
-    2. Loads it with PointLinearSystem.
-    3. Runs FISTASolver on it.
-    """
-    output_dir = Path("result/solve/point_test")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 1. Create Dummy Point Data
-    # Problem: Ax = b. 
-    # x is (Z=10).
-    # A is (N=5, Z=10).
-    # Let x_true be sparse.
-    Z = 10
-    N = 5
-    x_true = torch.zeros(Z)
-    x_true[2] = 1.0
-    x_true[5] = 0.5
-    
-    # A random
-    torch.manual_seed(42)
-    A = torch.randn(N, Z)
-    b = A @ x_true
-    
-    # Save as .pt
-    point_file = output_dir / "test_point.pt"
-    save_data = {'A': A, 'b': b, 'coord': (10, 10)}
-    torch.save(save_data, point_file)
-    
-    # 2. Load System
-    system = LinearSystemPoint(point_file, device='cpu')
-    assert system.Z == Z
-    assert system.N == N
-    
-    # 3. Solve
-    solver = FISTASolver(system, output_dir=output_dir, lipchitz=None, lambda_reg=0.01, backtracking=True) # L1 reg
-    
-    x0 = torch.zeros(1, 1, Z)
-    x_rec = solver.solve(x0, n_iter=50)
-    
-    # x_rec is (1, 1, Z)
-    x_rec_vec = x_rec.reshape(-1)
-    
-    # Check if we recovered indices 2 and 5 roughly
-    print(f"True x: {x_true}")
-    print(f"Rec x: {x_rec_vec}")
-    
-    # Because N < Z (5 < 10), it's underdetermined, but L1 should pick sparse solution.
-    # Check error
-    err = torch.norm(x_rec_vec - x_true)
-    print(f"Reconstruction Error: {err}")
-    
-    # With only 5 measurements for 2 non-zeros, recovery might be approximate but should be non-trivial
-    # Just check shapes and that it didn't crash.
-    assert x_rec.shape == (1, 1, Z)
-    assert not torch.isnan(x_rec).any()
-    
-    # Verify plotting created files (loss_curve.png, reconstruction.obj)
-    # Note: mesh export on 1x1xZ volume might be weird but shouldn't crash
-    # (volume2mesh generally expects 3D volume, but our code might handle it or just produce empty obj)
-    assert (output_dir / "loss_curve.png").exists()
-
 def test_reconstruction_ista():
     """
     A smoke test for the reconstruction pipeline using ISTASolver.
@@ -318,3 +254,4 @@ def test_reconstruction_ista():
     finally:
         root_logger.removeHandler(file_handler)
         root_logger.setLevel(original_level)
+

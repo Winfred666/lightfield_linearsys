@@ -8,13 +8,14 @@ import h5py
 import re
 from pathlib import Path
 from datetime import datetime
-from src.io.data_postclean import compute_valid_z_indices
-from src.core.linear_system_pair import LinearSystemPair
-from src.core.masked_system_pair import LinearSystemPairMasked
-from src.core.fista import FISTASolver
-from src.core.ista import ISTASolver
-from src.io.preprocess_pair import preprocess_one_pair
-from src.io.raw_pairs import find_raw_pairs, to_driver_file_dicts
+from LF_linearsys.io.data_postclean import compute_valid_z_indices
+from LF_linearsys.core.linear_system_pair import LinearSystemPair
+from LF_linearsys.core.masked_system_pair import LinearSystemPairMasked
+from LF_linearsys.core.fista import FISTASolver
+from LF_linearsys.core.ista import ISTASolver
+from LF_linearsys.core.l_bfgs_b import LBFGSBSolver
+from LF_linearsys.io.preprocess_pair import preprocess_one_pair
+from LF_linearsys.io.raw_pairs import find_raw_pairs, to_driver_file_dicts
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -56,8 +57,8 @@ def main():
     if joint_pair_num < 1:
         logger.warning(f"joint_pair_num={joint_pair_num} invalid, forcing to 1")
         joint_pair_num = 1
-    threshold_A = float(cfg['data'].get('threshold_A', 1e-3))
-    threshold_b = float(cfg['data'].get('threshold_b', 1.0))
+    threshold_A = cfg['data'].get('threshold_A', None)
+    threshold_b = cfg['data'].get('threshold_b', None)
 
     masking_cfg = cfg.get('masking', {}) or {}
     masking_enabled = bool(masking_cfg.get('enabled', False))
@@ -254,6 +255,13 @@ def main():
                     tag=f"batch_{batch_idx+1}",
                     lambda_reg=solver_cfg.get('lambda_reg', 0.0),
                     lipchitz=solver_cfg.get('lipchitz', 1.0)
+                )
+            elif solver_type == 'lbfgsb':
+                solver = LBFGSBSolver(
+                    system,
+                    output_dir=Path(output_dir_ts),
+                    tag=f"batch_{batch_idx+1}",
+                    lambda_reg=solver_cfg.get('lambda_reg', 0.0)
                 )
             elif solver_type == 'fista':
                 solver = FISTASolver(

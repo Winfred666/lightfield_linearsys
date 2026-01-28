@@ -104,11 +104,3 @@ def compute_valid_z_indices(
         int(valid_indices.max().item()),
     )
     return valid_indices
-
-def compute_active_z_range_from_indices(valid_z_indices: torch.Tensor) -> tuple[int, int]:
-    """Helper: convert valid z indices to a [z_min, z_max) range."""
-    if valid_z_indices is None or valid_z_indices.numel() == 0:
-        return 0, 0
-    z_min = int(valid_z_indices.min().item())
-    z_max = int(valid_z_indices.max().item()) + 1
-    return z_min, z_max

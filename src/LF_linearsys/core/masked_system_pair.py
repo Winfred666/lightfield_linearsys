@@ -6,7 +6,7 @@ from typing import Optional, List
 
 import torch
 
-from src.core.linear_system_pair import LinearSystemPair
+from LF_linearsys.core.linear_system_pair import LinearSystemPair
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,7 @@
 import torch
 import logging
 from typing import List, Tuple, Optional
-from src.io.data_postclean import post_clean_row
+from LF_linearsys.io.data_postclean import post_clean_row
 
 logger = logging.getLogger(__name__)
 

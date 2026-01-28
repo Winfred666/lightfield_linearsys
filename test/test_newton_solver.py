@@ -1,9 +1,9 @@
 import torch
 import pytest
 import logging
-from src.core.point_system import PointLinearSystem
-from src.core.batched_newton_linesearch import BatchedRegNewtonLSSolver
-from src.core.batched_newton_activeset import BatchedRegNewtonASSolver
+from LF_linearsys.core.point_system import PointLinearSystem
+from LF_linearsys.core.batched_newton_linesearch import BatchedRegNewtonLSSolver
+from LF_linearsys.core.batched_newton_activeset import BatchedRegNewtonASSolver
 
 def test_batched_newton_solver():
     """

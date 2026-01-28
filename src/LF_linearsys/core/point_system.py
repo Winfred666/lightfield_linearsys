@@ -17,26 +17,38 @@ class PointLinearSystem:
         self.A = A.to(device) # (B, M, N)
         self.b = b.to(device) # (B, M)
         
-        # Apply masking based on rows (Zero out invalid rows to maintain batch shape)
+        # Apply masking based on rows (zero out invalid rows to maintain batch shape)
+        # IMPORTANT semantics:
+        # - threshold_A controls whether a measurement row is considered valid.
+        # - threshold_b should NOT be used to drop rows (b can legitimately be 0).
+        #   Instead, threshold_b only suppresses b-values below threshold.
         mask = torch.ones_like(self.b, dtype=torch.bool)
-        
+
         if threshold_A is not None:
             # A is (B, M, N). Max over N (dim 2)
             row_max = torch.max(torch.abs(self.A), dim=2).values
-            mask = mask & (row_max > threshold_A)
-            
+            mask = row_max > threshold_A
+
+        # Apply row mask to A always (and to b as well, to keep equation consistent)
+        if threshold_A is not None:
+            self.A = self.A * mask.unsqueeze(2).to(self.A.dtype)
+            self.b = self.b * mask.to(self.b.dtype)
+
+        # Apply threshold_b only to b values (do not affect row validity)
         if threshold_b is not None:
-            mask = mask & (self.b > threshold_b)
-            
-        if threshold_A is not None or threshold_b is not None:
-            # Apply mask (not filter any row, just zero out)
-            # mask: (B, M) -> (B, M, 1) for A
-            self.A = self.A * mask.unsqueeze(2).float()
-            self.b = self.b * mask.float()
-            
+            self.b = torch.where(self.b > threshold_b, self.b, torch.zeros_like(self.b))
+
+        if threshold_A is not None:
             total = mask.numel()
-            kept = mask.sum().item()
-            logger.info(f"PointLinearSystem: Masked {total-kept}/{total} rows ({(kept/total)*100:.2f}% kept). Th_A={threshold_A}, Th_b={threshold_b}")
+            kept = int(mask.sum().item())
+            logger.info(
+                "PointLinearSystem: Masked %d/%d rows (%.2f%% kept). Th_A=%s, Th_b=%s",
+                total - kept,
+                total,
+                (kept / max(total, 1)) * 100.0,
+                threshold_A,
+                threshold_b,
+            )
 
         self.B, self.M, self.N = self.A.shape
         

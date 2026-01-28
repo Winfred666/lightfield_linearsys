@@ -12,7 +12,7 @@ from datetime import datetime
 import argparse
 
 # thresholds = [1.0, 0.9, 0.7, 0.6, 0.4, 0.2, 0.1, 1e-2]
-thresholds = [8.0, 6.0, 4.0, 2.0, 1.0, 0.9]
+thresholds = [10.0, 8.0, 6.0, 4.0, 2.0, 1.0, 0.9, 0.8, 0.7]
 
 
 def setup_logging(output_dir):
@@ -241,8 +241,8 @@ def visualize(
             raw_mode = True
             
         if raw_mode:
-             from src.io.preprocess_pair import preprocess_one_pair
-             from src.io.raw_pairs import find_raw_pairs
+             from LF_linearsys.io.preprocess_pair import preprocess_one_pair
+             from LF_linearsys.io.raw_pairs import find_raw_pairs
              
              pairs = find_raw_pairs(args.input_dir, args.img_dir)
              target_pair = None
@@ -308,24 +308,6 @@ def visualize(
 
     # Convert to numpy for plotting (subsample volume for histograms to save memory/time)
     logger.info("Converting to numpy...")
-    
-    # --- Pre-check for values > 1 (Inflated Mask) ---
-    mask_gt1 = (img > 1.0)
-    if mask_gt1.any():
-        logger.info(f"Found {mask_gt1.sum()} pixels > 1.0. Generating inflated mask visualization...")
-        # Dilate mask (Inflate)
-        # img is (Y, X). unsqueeze to (1, 1, Y, X)
-        # Visualize overlay
-        img_temp_np = img.numpy()
-        bg = normalize_img_percentile(img_temp_np)
-        vis_mask = overlay_nonzero_red(bg, mask_gt1, alpha=1.0)
-        fig_mask, ax_mask = plt.subplots(figsize=(10, 10))
-        ax_mask.imshow(vis_mask)
-        ax_mask.set_title("Inflated Mask of Values > 1.0 (Clipped areas)")
-        ax_mask.axis('off')
-        plt.savefig(output_dir / "mask_saturated_inflated.png")
-        plt.close(fig_mask)
-        logger.info("Saved mask_saturated_inflated.png")
     
     # Optional: Clip image values to [0, 1] as requested
     # img = torch.clamp(img, 0.0, 1.0)
@@ -458,7 +440,7 @@ def visualize(
             )
             ax.axis('off')
 
-            out_name = f"target_thr_{threshold:.3e}.png".replace("+", "")
+            out_name = f"target_thr_{threshold:.04f}.png".replace("+", "")
             plt.savefig(threshold_output_dir / out_name)
             plt.close(fig)
 
@@ -471,34 +453,54 @@ def visualize(
     # Let's plot grid of Z slices.
     
     nz = vol.shape[2]
-    num_slices = 25
+
+    # Show more slices for better spatial context.
+    # Keep it bounded so the figure doesn't become unreasonably large.
+    # NOTE: 64 slices often isn't enough to see structure in large Z volumes.
+    num_slices = int(min(100, int(nz)))
     indices = np.linspace(0, nz - 1, num_slices, dtype=int)
+
+    # Uniform legend: use a single (vmin, vmax) for ALL slices.
+    # Using global min/max is very sensitive to outliers; a robust global range
+    # usually produces more readable plots while remaining consistent.
+    global_vmin, global_vmax = robust_range_from_data(vol_np_sample, p_low=1.0, p_high=99.0)
+    logger.info(
+        "Volume slice colormap range (global, robust): vmin=%.6g vmax=%.6g",
+        global_vmin,
+        global_vmax,
+    )
 
     ncols = int(np.ceil(np.sqrt(num_slices)))
     nrows = int(np.ceil(num_slices / ncols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 5 * nrows))
     axes = np.asarray(axes).ravel()
+
+    shared_im = None
     
     for i, idx in enumerate(indices):
         # Slice: vol[:, :, idx] -> (X, Y).
         # imshow expects (H, W) -> (Y, X). So transpose.
-        slice_data = vol[:, :, idx].numpy().T 
-        s_vmin, s_vmax = robust_range_from_data(slice_data, p_low=1.0, p_high=99.0)
-        im = axes[i].imshow(slice_data, cmap='viridis', vmin=s_vmin, vmax=s_vmax)
+        slice_data = vol[:, :, idx].numpy().T
+        im = axes[i].imshow(slice_data, cmap='viridis', vmin=global_vmin, vmax=global_vmax)
         axes[i].set_title(f"Z-Slice {idx}")
         # Keep axes visible for alignment debugging
         axes[i].set_xlabel("X")
         axes[i].set_ylabel("Y")
 
-        # Unique colorbar per slice
-        fig.colorbar(im, ax=axes[i], fraction=0.046, pad=0.04)
+        if shared_im is None:
+            shared_im = im
 
     # Hide any extra axes if grid > num_slices
     for j in range(len(indices), len(axes)):
         axes[j].axis('off')
-        
-    plt.tight_layout()
-    plt.savefig(output_dir / "volume_slices.png")
+
+    # Single shared colorbar/legend for all slices (match visualize_density_slices.py style).
+    if shared_im is not None:
+        fig.subplots_adjust(right=0.9)
+        cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+        fig.colorbar(shared_im, cax=cbar_ax, label='Intensity')
+
+    plt.savefig(output_dir / "volume_slices.png", bbox_inches='tight')
     plt.close()
     logger.info("Saved volume_slices.png")
 
@@ -579,9 +581,9 @@ if __name__ == "__main__":
     )
     
     # Raw Data Mode Arguments
-    parser.add_argument("--input-dir", default=None, help="Raw volume directory (e.g. data/raw/lightsheet_vol_6.9)")
-    parser.add_argument("--img-dir", default=None, help="Raw image directory (e.g. data/raw/20um_imgs)")
-    parser.add_argument("--downsampling-rate", type=float, default=0.125, help="Downsampling rate for raw mode")
+    parser.add_argument("--input-dir", default="data/raw/lightsheet_vol_6.9", help="Raw volume directory (e.g. data/raw/lightsheet_vol_6.9)")
+    parser.add_argument("--img-dir", default="data/raw/20um_imgs", help="Raw image directory (e.g. data/raw/20um_imgs)")
+    parser.add_argument("--downsampling-rate", type=float, default=0.5, help="Downsampling rate for raw mode")
     parser.add_argument("--scale-factor", type=float, default=8.0, help="Scale factor for raw mode")
 
     args = parser.parse_args()

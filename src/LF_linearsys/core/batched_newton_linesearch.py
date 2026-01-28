@@ -2,7 +2,7 @@ import torch
 import logging
 import os
 from pathlib import Path
-from src.core.point_system import PointLinearSystem
+from LF_linearsys.core.point_system import PointLinearSystem
 
 logger = logging.getLogger(__name__)
 

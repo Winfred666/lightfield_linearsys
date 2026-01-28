@@ -1,9 +1,9 @@
 import torch
 import logging
 from typing import List, Tuple, Optional, Dict
-from src.core.linear_system_pair import LinearSystemPair
+from LF_linearsys.core.linear_system_pair import LinearSystemPair
 from pathlib import Path
-from src.core.solver import Solver
+from LF_linearsys.core.solver import Solver
 
 logger = logging.getLogger(__name__)
 

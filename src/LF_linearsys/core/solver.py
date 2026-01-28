@@ -1,11 +1,11 @@
 import torch
 import logging
 from abc import ABC, abstractmethod
-from src.core.linear_system_pair import LinearSystemPair
+from LF_linearsys.core.linear_system_pair import LinearSystemPair
 from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
-from src.utils.volume2mesh import export_volume_to_obj
+from LF_linearsys.utils.volume2mesh import export_volume_to_obj
 import time
 
 logger = logging.getLogger(__name__)
@@ -63,11 +63,9 @@ class Solver(ABC):
         return x
 
     def log(self, x, k):
-        # NOTE: Logging can be surprisingly expensive and can also trigger large GPU
-        # allocations if we compute norms/sparsity on CUDA. We therefore:
-        # 1) compute Ax/residual on the system device (GPU)
-        # 2) immediately detach+move the small vectors to CPU
-        # 3) compute scalar statistics on CPU
+        # NOTE: Logging can be surprisingly expensive.
+        # Per your preference, we keep computations on the system device (GPU)
+        # and only convert final scalars via .item() for Python logging/history.
         t0 = time.time()
         logger.info("Iter %d: computing log statistics...", k)
 
@@ -75,13 +73,27 @@ class Solver(ABC):
             Ax = self.system.forward(x)
             resid = Ax - self.system.b
 
-            # Move only what we need to CPU
-            resid_cpu = resid.detach().float().cpu()
-            x_cpu = x.detach().float().cpu()
+            # Compute stats ON DEVICE.
+            # Keep these as tensors until the end; calling .item() syncs.
+            resid_f = resid.detach().float()
+            x_f = x.detach().float()
 
-        resid_norm = torch.norm(resid_cpu).item()
-        l1_norm = torch.norm(x_cpu, p=1).item()  # Show L1 norm of solved x.
-        loss = 0.5 * (resid_norm ** 2)
+            resid_norm_t = torch.linalg.vector_norm(resid_f)
+            l1_norm_t = torch.linalg.vector_norm(x_f.reshape(-1), ord=1)
+            loss_t = 0.5 * (resid_norm_t ** 2)
+
+            # Sparsity = fraction of (near) zeros
+            sparsity_t = 1.0 - (x_f > 1e-6).float().mean()
+
+            # Min/max/mean
+            min_x_t = x_f.min()
+            max_x_t = x_f.max()
+            mean_x_t = x_f.mean()
+
+        # Convert to Python scalars for logging/history
+        resid_norm = float(resid_norm_t.item())
+        l1_norm = float(l1_norm_t.item())
+        loss = float(loss_t.item())
 
         # Exit early if loss becomes NaN/Inf
         if not np.isfinite(loss):
@@ -94,14 +106,12 @@ class Solver(ABC):
             )
             raise FloatingPointError(f"Non-finite loss encountered at iter {k}: {loss}")
 
-        # Sparsity = fraction of (near) zeros
-        sparsity = 1.0 - (x_cpu > 1e-6).float().mean().item()
-        
-        # Compute min, max, and mean of solved x
-        min_x = x_cpu.min().item()
-        max_x = x_cpu.max().item()
-        mean_x = x_cpu.mean().item()
-        
+        sparsity = float(sparsity_t.item())
+
+        min_x = float(min_x_t.item())
+        max_x = float(max_x_t.item())
+        mean_x = float(mean_x_t.item())
+
         self.history['loss'].append(loss)
         self.history['residual_norm'].append(resid_norm)
         self.history['sparsity'].append(sparsity)

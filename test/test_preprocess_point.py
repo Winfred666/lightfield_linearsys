@@ -25,7 +25,7 @@ def test_preprocess_point_packs_pairs_correctly():
       b[i,m]   equals original b_m[y,x]
     """
     # Import here so the test doesn't require the module at collection time
-    from src.io.preprocess_point import preprocess_points_optimized
+    from LF_linearsys.io.preprocess_point import preprocess_points_optimized
 
     out_dir = Path("result/solve/preprocess_point_test")
     data_dir = out_dir / "pairs"
@@ -101,8 +101,8 @@ def test_preprocess_point_raw_mode(monkeypatch):
     We stub preprocess_one_pair to return deterministic tensors for each idx.
     preprocess_points_from_raw should stack those into points_batch_0000.pt.
     """
-    from src.io import preprocess_point as pp
-    import src.io.preprocess_pair as preprocess_pair
+    from LF_linearsys.io import preprocess_point as pp
+    import LF_linearsys.io.preprocess_pair as preprocess_pair
 
     out_dir = Path("result/solve/preprocess_point_test_raw")
     input_dir = out_dir / "raw_vols"

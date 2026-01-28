@@ -1,8 +1,8 @@
 import torch
 import pytest
-from src.core.fista import FISTASolver
-from src.core.linear_system_pair import LinearSystemPair
-from src.core.masked_system_pair import LinearSystemPairMasked
+from LF_linearsys.core.fista import FISTASolver
+from LF_linearsys.core.linear_system_pair import LinearSystemPair
+from LF_linearsys.core.masked_system_pair import LinearSystemPairMasked
 from pathlib import Path
 
 def test_linear_system_setup_and_filter():

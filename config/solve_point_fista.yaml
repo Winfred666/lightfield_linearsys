@@ -3,7 +3,7 @@ data:
   output_dir: "result/solve_point/fista"
   batch_pattern: "points_batch_*.pt"
   threshold_A: 0.0001
-  threshold_b: 0.8
+  threshold_b: null
 
 solver:
   type: "fista" # Options: fista, ista
@@ -11,7 +11,7 @@ solver:
   n_iter: 800
   positivity: true
   lipchitz: 20.0 # Optional, default 1.0 if not specified
-  batch_size: 30000 # Sub-batch size for solving on GPU
+  batch_size: 5000 # Sub-batch size for solving on GPU
 
 device: "cuda" # or cpu
 

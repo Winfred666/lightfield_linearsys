@@ -12,14 +12,14 @@ data:
   output_dir: "result/solve_point/newton/20um_imgs/ds0p5_30000"
   batch_pattern: "points_batch_*.pt" # Used if points_dir is active, ignored in raw mode (internal convention)
   threshold_A: 0.0001
-  threshold_b: 0.0
+  threshold_b: null
 
 solver:
   type: "newton" # Options: newton, ista
-  lambda_reg: 0.00001
+  lambda_reg: 1.0e-6
   n_iter: 35
   positivity: true
-  batch_size: 30000 # Sub-batch size for solving on GPU
+  batch_size: 5000 # Sub-batch size for solving on GPU
 
 
 device: "cuda" # or cpu

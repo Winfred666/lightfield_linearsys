@@ -1,35 +1,42 @@
-# Configuration for Light Field Solver (FISTA) - Version 2 with average_imgs2
 # Using new average_imgs2 data and downsampled 0.125 pairs
 
 data:
-  data_dir: "data/processed/version_2/ds0p125"
-  output_dir: "result/solve_pair/fista_version2"
+  # Option 1: Pre-processed HDF5 files
+  # data_dir: "data/processed/20um_imgs/ds0p5"
+
+  # Option 2: On-the-fly preprocessing (Raw Data)
+  # If these are set, they override data_dir
+  raw_A_dir: "data/raw/lightsheet_vol_6.9"
+  raw_b_dir: "data/raw/60um_imgs"
+  downsampling_rate: 0.5 # scale_factor defaults to 8.0, matching preprocess logic
+  scale_factor: 8.0
+  
+  output_dir: "result/solve_pair/lbfgsb_60um_imgs_ds0p5"
   # Optional path to a .pt file containing 'reconstruction' tensor to initialize x_global
   init_global_x: null
 
   # Memory consuming: using joint pair could joint solving multiple measurement together for better quality.
-  joint_pair_num: 1
+  joint_pair_num: 15
 
   max_pairs: null  # Set to null or a large number for full run
   threshold_A: 0.0001 # Threshold for filtering zero rows in light field A
   threshold_b: null # Threshold for filtering target b
 
 solver:
-  type: "fista" # Options: fista, ista
-  n_iter: 800
+  type: "lbfgsb" # Options: fista, ista, lbfgsb
+  n_iter: 35
   lambda_reg: 0.0 # L1 regularization weight, prevent extremely low ghost volumes.
-  lipchitz: 80.0 # Optional, default 1.0 if not specified
+  lipchitz: 200.0 # Optional, default 1.0 if not specified
 
 # Optional: infer and fix provably-zero variables under x>=0 constraint.
 # When enabled, the solver runs on a reduced set of free variables.
 masking:
   enabled: false
-  
   # If false, masking inference is disabled (conservative) because A may have negatives.
   assume_non_negative_A: true
 
-device: "cuda" # "cuda" or "cpu"
+device: "cpu" # "cuda" or "cpu"
 
 # Optional: export mesh after each pair update.
 # If omitted, defaults to 0.5.
-mesh_iso: 0.5
+mesh_iso: [2.0, 4.0]

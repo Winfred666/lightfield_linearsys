@@ -10,8 +10,8 @@ import argparse
 # Ensure src is in path if running from root
 sys.path.append(os.path.join(os.path.dirname(__file__), "../.."))
 
-from src.io.readers import read_volume, read_image, scale_volume
-from src.io.raw_pairs import find_raw_pairs
+from LF_linearsys.io.readers import read_volume, read_image, scale_volume
+from LF_linearsys.io.raw_pairs import find_raw_pairs
 import time
 
 

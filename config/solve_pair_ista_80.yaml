@@ -16,7 +16,7 @@ data:
 
   max_pairs: null  # Set to null or a large number for full run
   threshold_A: 0.0001 # Threshold for filtering zero rows in light field A
-  threshold_b: 0.0 # Threshold for filtering target b
+  threshold_b: null # Threshold for filtering target b
 
 solver:
   type: "ista" # Options: fista, ista

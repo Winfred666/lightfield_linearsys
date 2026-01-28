@@ -2,7 +2,10 @@ import torch
 import logging
 import os
 from pathlib import Path
-from src.core.point_system import PointLinearSystem
+from LF_linearsys.core.point_system import PointLinearSystem
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +13,7 @@ class BatchedRegNewtonASSolver:
     """
     Projected Regularized Newton Solver for Batched Point Linear Systems - Using Active Set.
     Minimizes:
-        f(x) = 0.5 * ||Ax - b||^2 + 0.5 * lambda_reg * ||Dx||^2
+        f(x) = 0.5 * ||Ax - b||^2 + 0.5 * lambda_reg * ||x||^2
     subject to x >= 0.
 
     Strategy:
@@ -27,6 +30,18 @@ class BatchedRegNewtonASSolver:
         self.n_iter = n_iter
         self.output_dir = output_dir
         self.positivity = positivity
+
+        # Logging/history (similar spirit to core/Solver but simplified).
+        self.log_interval = int(kwargs.get("log_interval", 5))
+        self.history: dict[str, list[float] | list[int]] = {
+            "iter": [],
+            "loss": [],
+            "residual_norm": [],
+        }
+
+        # Auto-tag each call to solve() so repeated runs don't overwrite artifacts.
+        # (e.g. in unit tests where multiple solves happen in one output_dir)
+        self._solve_call_idx = 0
         
         # Dimensions
         self.B = system.B
@@ -34,41 +49,39 @@ class BatchedRegNewtonASSolver:
         self.N = system.N # This is Z (depth)
         
         self.device = system.device
-        
-        # Precompute D (Finite Difference Matrix)
-        if self.N > 1:
-            D = torch.zeros(self.N - 1, self.N, device=self.device)
-            idx = torch.arange(self.N - 1, device=self.device)
-            D[idx, idx] = -1.0
-            D[idx, idx + 1] = 1.0
-            self.D = D
-        else:
-            self.D = torch.zeros(1, 1, device=self.device)
             
-        # Precompute D^T D which is constant (N, N)
-        self.DtD = torch.matmul(self.D.T, self.D) # (N, N)
-        
         # Precompute A^T A for each batch
         logger.info("Precomputing A^T A for Active Set Newton Solver...")
         self.AtA = torch.bmm(self.system.At, self.system.A) # (B, N, N)
         
-        # Base Hessian H = AtA + lambda * DtD + eps * I
-        self.H_base = self.AtA + self.lambda_reg * self.DtD.unsqueeze(0) # Broadcast (B, N, N)
-        self.H_base += 1e-5 * torch.eye(self.N, device=self.device).unsqueeze(0)
+        # Base Hessian H = AtA + lambda * I
+        # Regularization ensures PD if lambda > 0.
+        I = torch.eye(self.N, device=self.device).unsqueeze(0) # (1, N, N)
+        self.H_base = self.AtA + self.lambda_reg * I
         
     def _compute_loss(self, x):
         """
-        Compute f(x) = 0.5 * ||Ax - b||^2 + 0.5 * lambda_reg * ||Dx||^2
+        Compute f(x) = 0.5 * ||Ax - b||^2 + 0.5 * lambda_reg * ||x||^2
         """
         Ax = self.system.forward(x)
         res = Ax - self.system.b
         loss_data = 0.5 * torch.sum(res ** 2, dim=1)
         
-        Dx = torch.matmul(x, self.D.T)
-        loss_reg = 0.5 * self.lambda_reg * torch.sum(Dx ** 2, dim=1)
+        loss_reg = 0.5 * self.lambda_reg * torch.sum(x ** 2, dim=1)
         return loss_data + loss_reg
 
-    def solve(self, x0=None):
+    def solve(self, x0=None, *, tag: str | None = None):
+        # Only record per-iteration history (and plot) when the caller requests it.
+        # In large runs this avoids extra CPU work + memory growth, and lets callers
+        # decide to plot only every N batches.
+        record_history = tag is not None
+
+        # Reset per-run history.
+        # (We always clear to avoid mixing histories across multiple solve() calls.)
+        self.history["iter"] = []
+        self.history["loss"] = []
+        self.history["residual_norm"] = []
+
         x = torch.zeros(self.B, self.N, device=self.device) if x0 is None else x0.to(self.device)
         
         beta = 0.5
@@ -81,7 +94,7 @@ class BatchedRegNewtonASSolver:
             residual = Ax - self.system.b
             
             grad_data = self.system.adjoint(residual)
-            grad_reg = self.lambda_reg * torch.matmul(x, self.DtD.T)
+            grad_reg = self.lambda_reg * x
             grad = grad_data + grad_reg # (B, N)
             
             # --- 2. Determine Batched Active Set ---
@@ -130,6 +143,16 @@ class BatchedRegNewtonASSolver:
             
             # --- 5. Vectorized Projected Line Search ---
             f_x = self._compute_loss(x)
+
+            # Record mean loss / mean residual for plotting.
+            # (loss is per-batch already)
+            if record_history and (k % self.log_interval == 0 or k == self.n_iter - 1):
+                with torch.no_grad():
+                    mean_loss = float(f_x.mean().item())
+                    resid_norm = float(torch.linalg.vector_norm(residual.detach().float()).item())
+                self.history["iter"].append(int(k))
+                self.history["loss"].append(mean_loss)
+                self.history["residual_norm"].append(resid_norm)
             
             # Per-batch step sizes (shape: (B,))
             alpha_vec = torch.full((self.B,), 0.5, device=self.device)
@@ -188,4 +211,40 @@ class BatchedRegNewtonASSolver:
                 logger.info(f"Converged at iter {k}")
                 break
                 
+        # Post-solve: export artifacts (optional)
+        if record_history and (self.output_dir is not None):
+            out_dir = Path(self.output_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            self._plot_history(out_dir, tag=tag)
+
         return x
+
+    def _plot_history(self, output_dir: Path, *, tag: str):
+        """Save a simple convergence plot (residual norm + loss) like core/Solver."""
+        if not self.history.get("iter"):
+            logger.warning("AS-Newton history is empty; skipping plot.")
+            return
+
+        sub_dir = Path(output_dir) / "loss_curve"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        save_path = sub_dir / f"loss_curve_{tag}.png"
+
+        fig, ax1 = plt.subplots(figsize=(10, 6))
+        iters = list(self.history["iter"])
+
+        ax1.set_xlabel("Iteration")
+        ax1.set_ylabel("Residual Norm")
+        ax1.plot(iters, self.history["residual_norm"], label="Residual Norm")
+        ax1.set_yscale("log")
+
+        # ax2 = ax1.twinx()
+        # ax2.set_ylabel("Mean Loss")
+        # ax2.plot(iters, self.history["loss"], color="tab:orange", label="Mean Loss")
+        # ax2.set_yscale("log")
+        
+        fig.tight_layout()
+        plt.title(f"AS-Newton Convergence ({tag})")
+        plt.savefig(save_path)
+        plt.close(fig)
+        logger.info("Saved AS-Newton convergence plot to %s", save_path)
+
