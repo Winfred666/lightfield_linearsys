@@ -7,8 +7,6 @@ from LF_linearsys.core.linear_system_pair import LinearSystemPair
 from LF_linearsys.core.masked_system_pair import LinearSystemPairMasked
 from LF_linearsys.core.fista import FISTASolver
 from LF_linearsys.core.ista import ISTASolver
-from LF_linearsys.core.linear_system_point import LinearSystemPoint
-import os
 
 
 def make_sphere_volume(X: int, Y: int, Z: int, *, radius: float | None = None, dtype=torch.float16) -> torch.Tensor:

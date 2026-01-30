@@ -6,6 +6,8 @@ from LF_linearsys.core.point_system import PointLinearSystem
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
+
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,9 @@ class BatchedRegNewtonASSolver:
         # Regularization ensures PD if lambda > 0.
         I = torch.eye(self.N, device=self.device).unsqueeze(0) # (1, N, N)
         self.H_base = self.AtA + self.lambda_reg * I
+
+        # Log condition number of base Hessian
+        # self._log_condition_number()
         
     def _compute_loss(self, x):
         """
@@ -101,6 +106,13 @@ class BatchedRegNewtonASSolver:
             # Active if x is approx 0 AND gradient is positive (trying to push x negative)
             # Use small epsilon for zero check
             active_mask = (x <= 1e-7) & (grad > 0)
+
+            # Fix for singular columns (e.g. where A is 0 for valid Z slices but no signal)
+            # If diagonal of H is ~0, the system is singular. Treat these as active (frozen).
+            # H_base is (B, N, N)
+            h_diag = self.H_base.diagonal(dim1=-2, dim2=-1) # (B, N)
+            null_mask = h_diag.abs() < 1e-8
+            active_mask = active_mask | null_mask
             
             # --- 3. Build/Modify Batched Hessian ---
             # Start with base Hessian
@@ -247,4 +259,26 @@ class BatchedRegNewtonASSolver:
         plt.savefig(save_path)
         plt.close(fig)
         logger.info("Saved AS-Newton convergence plot to %s", save_path)
+
+
+
+    def _log_condition_number(self):
+        """
+        Compute condition number of the base Hessian H = A^T A + lambda*I for each batch.
+        And log the mean, max and min of the condition number in one batch
+        """
+        cond_numbers = []
+        for b in range(self.B):
+            H_b = self.H_base[b].cpu().numpy()
+            eigvals = np.linalg.eigvalsh(H_b)
+            cond_num = eigvals[-1] / eigvals[0]
+            cond_numbers.append(cond_num)
+        cond_numbers = np.array(cond_numbers)
+        logger.info(
+            "Hessian condition numbers -- Mean: %.2e, Min: %.2e, Max: %.2e",
+            cond_numbers.mean(),
+            cond_numbers.min(),
+            cond_numbers.max(),
+        )
+        return cond_numbers
 

@@ -1,5 +1,5 @@
 data:
-  points_dir: "data/points/80um_imgs/ds0p5_30000"
+  points_dir: "data/points/80um_imgs/ds0p125_30000"
   
   # raw_A_dir: "data/raw/lightsheet_vol_6.9"
   # raw_b_dir: "data/raw/80um_imgs"
@@ -8,17 +8,17 @@ data:
   # max_pairs: null # Limit input pairs for testing
   # file_batch_size: 30000 # Points per batch file (cache)
   
-  output_dir: "result/solve_point/newton/80um_imgs/ds0p5_30000"
+  output_dir: "result/solve_point/newton/80um_imgs/ds0p125_30000"
   batch_pattern: "points_batch_*.pt"
-  threshold_A: 0.0001
+  threshold_A: 0.01
   threshold_b: null
 
 solver:
   type: "newton" # Options: newton, ista
-  lambda_reg: 1.0e-6
+  lambda_reg: 0.000001
   n_iter: 35
   positivity: true
-  batch_size: 1000 # Sub-batch size for solving on GPU
+  batch_size: 2000 # Sub-batch size for solving on GPU
 
 
 device: "cuda" # or cpu

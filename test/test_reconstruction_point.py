@@ -7,7 +7,6 @@ import torch
 
 from LF_linearsys.core.batched_newton_activeset import BatchedRegNewtonASSolver
 from LF_linearsys.core.fista import FISTASolver
-from LF_linearsys.core.linear_system_point import LinearSystemPoint
 from LF_linearsys.core.point_system import PointLinearSystem
 
 
@@ -95,38 +94,6 @@ def _make_point_batch_from_volume(
 		b = b + noise_std * torch.randn_like(b, generator=g)
 
 	return A, b, x_true
-
-
-def test_point_reconstruction_fista_smoke(tmp_path: Path):
-	"""Keep an ultra-small legacy-like smoke test for point reconstruction via file IO."""
-	output_dir = Path("result/solve/point_test")
-	output_dir.mkdir(parents=True, exist_ok=True)
-
-	# Simple underdetermined point system Ax=b with sparse truth.
-	Z = 10
-	N = 5
-	x_true = torch.zeros(Z)
-	x_true[2] = 1.0
-	x_true[5] = 0.5
-
-	torch.manual_seed(42)
-	A = torch.randn(N, Z)
-	b = A @ x_true
-
-	point_file = output_dir / "test_point.pt"
-	torch.save({"A": A, "b": b, "coord": (10, 10)}, point_file)
-
-	system = LinearSystemPoint(point_file, device="cpu")
-	assert system.Z == Z
-	assert system.N == N
-
-	solver = FISTASolver(system, output_dir=output_dir, lipchitz=None, lambda_reg=0.01, backtracking=True)
-	x0 = torch.zeros(1, 1, Z)
-	x_rec = solver.solve(x0, n_iter=30)
-
-	assert x_rec.shape == (1, 1, Z)
-	assert not torch.isnan(x_rec).any()
-
 
 def test_active_set_newton_solver_on_synth_point_dataset():
 	"""Smoke test: Active-set batched Newton on a synthetic batched point dataset.

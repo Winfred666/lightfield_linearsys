@@ -308,9 +308,6 @@ def main():
 
     # 2. Clip Plane Widget
     # This is a very visible UI widget that allows interactive slicing
-    # Clip plane widget for interactive slicing.
-    # NOTE: API varies across PyVista versions; keep kwargs minimal to avoid forwarding
-    # unexpected kwargs into add_volume (which can raise TypeError).
     pl.add_volume_clip_plane(
         grid,
         normal='-x',
@@ -321,7 +318,43 @@ def main():
     # 3. Add Outline and Axes
     pl.add_mesh(grid.outline(), color="black")
     pl.add_axes()
+    
+    # 4. View Buttons (Top Left)
+    # Callback wrappers
+    def set_view_top(val):
+        pl.view_xy()
+    def set_view_front(val):
+        pl.view_zx()
+    def set_view_right(val):
+        pl.view_zy()
+    def set_view_iso(val):
+        pl.view_isometric()
 
+    # Button configs
+    btns = [
+        ("Top", "#FF9999", set_view_top),
+        ("Front", "#99FF99", set_view_front),
+        ("Right", "#9999FF", set_view_right),
+        ("Iso", "#DDDDDD", set_view_iso),
+    ]
+
+    # Position: Start top left. 
+    # PyVista widget coords are usually absolute pixels (x, y). 
+    start_x = 20
+    start_y = 850
+    gap = 50
+
+    for i, (txt, col, cb) in enumerate(btns):
+        # Add the interactive button (solid color)
+        # Note: size must be an integer (width/height square) for some pyvista versions
+        pl.add_checkbox_button_widget(
+            cb,
+            position=(start_x + i * gap, start_y),
+            size=30,
+            color_on=col,
+            color_off=col
+        )
+        
     # 4. Bounds with labels
     pl.show_bounds(
         grid=True,

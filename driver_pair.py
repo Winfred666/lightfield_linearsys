@@ -2,6 +2,7 @@ import argparse
 import torch
 import glob
 import os
+import sys
 import logging
 import yaml
 import h5py
@@ -16,10 +17,12 @@ from LF_linearsys.core.ista import ISTASolver
 from LF_linearsys.core.l_bfgs_b import LBFGSBSolver
 from LF_linearsys.io.preprocess_pair import preprocess_one_pair
 from LF_linearsys.io.raw_pairs import find_raw_pairs, to_driver_file_dicts
+from LF_linearsys.utils.time_recorder import TimeRecorder
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
 
 def load_config(config_path):
     with open(config_path, 'r') as f:
@@ -75,7 +78,7 @@ def main():
         device = 'cpu'
         logger.info("Using CPU")
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir_ts = str(Path(output_dir) / timestamp)
     Path(output_dir_ts).mkdir(parents=True, exist_ok=True)
     
@@ -87,7 +90,10 @@ def main():
     logging.getLogger().addHandler(file_handler)
 
     logger.info(f"Output directory: {output_dir_ts}")
-    
+
+    # Initialize timing recorder
+    timer = TimeRecorder(Path(output_dir_ts), worker_id="main")
+
     # 1. Find files
     files = []
     if use_raw:
@@ -144,6 +150,9 @@ def main():
             continue
 
         try:
+            # Start IO/preprocess timing
+            timer.start('io')
+
             # Load batch -> lists of A,b
             A_full_list = []
             b_list = []
@@ -188,9 +197,12 @@ def main():
                 A_full_list.append(A)
                 b_list.append(b)
 
+            # Stop IO timing, start overhead timing for system setup
+            timer.stop()
+            timer.start('overhead')
+
             if not A_full_list:
                 logger.warning("No valid pairs in this batch; skipping.")
-                continue
 
             # Check/init global volume shape
             if x_global is None or x_global.shape != A_full_list[0].shape:
@@ -275,10 +287,18 @@ def main():
                 
             # Prepare initial guess from global volume (selected z indices)
             x0_sub = x_global.index_select(2, valid_z_indices).to(device)
-            
+
+            # Stop overhead timing, start compute timing for solver
+            timer.stop()
+            timer.start('compute')
+
             # Solve
             logger.info("Starting Solver for current pair (slice)...")
             x_result_sub = solver.solve(x0_sub, n_iter=solver_cfg.get('n_iter', 100))
+
+            # Stop compute timing, restart overhead timing for cleanup and updates
+            timer.stop()
+            timer.start('overhead')
             
             # Update Global Volume (Slice + valid_indices only)
             logger.info("Updating global volume (max aggregation)...")
@@ -374,6 +394,9 @@ def main():
                 # solver._export_volume_pt(x_global)
             
             
+            # Stop overhead timing before cleanup
+            timer.stop()
+
             # Cleanup
             del system, solver, x_result_sub, A_list, b_list, A_full_list, x_result_sub_cpu, current_sel, updated_sel
             if ghost_vol is not None:
@@ -383,20 +406,46 @@ def main():
             gc.collect()
             
         except Exception as e:
-            item_desc = batch_files[0] if batch_files else "unknown"
-            if isinstance(item_desc, dict) and 'id' in item_desc:
-                item_desc = f"ID {item_desc['id']}"
-            logger.error(f"Failed to process batch {batch_idx+1} (starts with {item_desc}): {e}", exc_info=True)
-            continue
+            logger.exception(f"Fatal error during batch {batch_idx+1}. Terminating.")
+            sys.exit(1)
 
     save_path = Path(output_dir_ts) / "reconstruction.pt"
     
     logger.info(f"Saving final result to {save_path}")
     torch.save({"reconstruction": x_global}, save_path)
+
+    # Visualization (Always enabled, stride=5)
+    try:
+        from LF_linearsys.utils.visualize_slices import visualize_reconstruction_and_reprojection
+
+        # Always force viz output to a standard location inside the run folder
+        out_dir = Path(output_dir_ts) / "viz"
+
+        logger.info("Starting mandatory visualization (stride=5)...")
+        visualize_reconstruction_and_reprojection(
+            vol=x_global.detach().cpu().float(),
+            output_dir=out_dir,
+            threshold_A=float(cfg["data"].get("threshold_A", 0.1) or 0.1),
+            data_dir=cfg["data"].get("data_dir"),
+            raw_A_dir=cfg["data"].get("raw_A_dir"),
+            raw_b_dir=cfg["data"].get("raw_b_dir"),
+            downsampling_rate=float(cfg["data"].get("downsampling_rate", 0.125)),
+            scale_factor=float(cfg["data"].get("scale_factor", 8.0)),
+            stride_pairs=5,
+            make_z_scan_video=True,
+        )
+        logger.info(f"Saved visualizations to {out_dir}")
+    except Exception as e:
+        logger.warning(f"Visualization failed: {e}")
     
     with open(Path(output_dir_ts) / "config_used.yaml", 'w') as f:
         yaml.dump(cfg, f)
-        
+
+    # Save timing results
+    timer.save()
+    summary = timer.get_summary()
+    logger.info(f"Timing summary: IO={summary['io_time']:.2f}s, Compute={summary['compute_time']:.2f}s, Overhead={summary['overhead_time']:.2f}s, Total={summary['total_time']:.2f}s")
+
     logger.info("Done.")
 
 if __name__ == "__main__":

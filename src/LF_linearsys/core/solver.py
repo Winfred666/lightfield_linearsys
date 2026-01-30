@@ -28,7 +28,7 @@ class Solver(ABC):
         # Optional suffix for output artifacts (plots/meshes) to avoid overwriting.
         self.tag = str(tag) if tag is not None else ""
         
-        self.log_interval = 25
+        self.log_interval = 50
 
     def _tagged_name(self, base: str, ext: str) -> str:
         """Build output filename with optional tag.

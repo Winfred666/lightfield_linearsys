@@ -167,3 +167,4 @@ class LinearSystemPair:
         grad_flat.scatter_add_(0, index_expanded, weighted_A)
         
         return grad_flat.reshape(self.X, self.Y, self.Z)
+    

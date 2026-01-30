@@ -19,6 +19,7 @@ from LF_linearsys.core.batched_newton_activeset import BatchedRegNewtonASSolver
 from LF_linearsys.core.batched_ista import BatchedISTASolver
 from LF_linearsys.utils.volume2mesh import export_volume_to_obj
 from LF_linearsys.io.preprocess_point import preprocess_points_from_raw
+from LF_linearsys.utils.time_recorder import TimeRecorder
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(processName)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -56,6 +57,9 @@ def process_file(args):
     file_path, gpu_id, cfg, output_dir = args
     global shared_x_global
     
+    # Initialize timing recorder for this worker
+    timer = TimeRecorder(output_dir, worker_id=f"gpu_{gpu_id}")
+    
     try:
         # Assign device
         if torch.cuda.is_available():
@@ -64,12 +68,19 @@ def process_file(args):
             device = torch.device('cpu')
         logger.info(f"START {file_path.name} on {device}")
 
+        # Start IO timing
+        timer.start('io')
+
         # Load data: IO time is the main bottleneck !!!
         data = torch.load(file_path, map_location='cpu')
         
         A_full = data['A']
         b_full = data['b']
         coords_full = data['coords'] # (N, 2)
+        
+        # Stop IO timing, start overhead for setup
+        timer.stop()
+        timer.start('overhead')
         
         total_points = A_full.shape[0]
         # Solver batch size (sub-batch within the file to fit in GPU memory)
@@ -111,6 +122,10 @@ def process_file(args):
             else:
                 raise ValueError(f"Unknown solver type: {solver_type}")
             
+            # Stop overhead timing, start compute timing
+            timer.stop()
+            timer.start('compute')
+            
             # Solve
             # Only plot / record loss curve periodically to reduce overhead.
             # Pass tag=None to disable history/plot inside the solver.
@@ -119,6 +134,10 @@ def process_file(args):
             else:
                 solve_tag = None
             x_hat_sub = solver.solve(tag=solve_tag) # Expected (B_sub, Z)
+            
+            # Stop compute timing, start overhead timing for cleanup/update
+            timer.stop()
+            timer.start('overhead')
             
             # Move result to CPU
             x_hat_cpu = x_hat_sub.detach().cpu()
@@ -139,11 +158,19 @@ def process_file(args):
 
             logger.info(f"Finished batch {i + 1}/{num_sub_batches} of {file_path.name} on {device}")
 
+        # Stop final overhead timing
+        timer.stop()
+        
+        # Save timing results
+        timer.save()
+        summary = timer.get_summary()
+        logger.info(f"Worker {gpu_id} ({file_path.name}) Timing: IO={summary['io_time']:.2f}s, Compute={summary['compute_time']:.2f}s, Overhead={summary['overhead_time']:.2f}s")
+
         return f"Finished {file_path.name} on {device}"
         
     except Exception as e:
-        logger.exception(f"Error processing {file_path}")  # includes traceback
-        return f"Error processing {file_path.name}: {e}"
+        logger.exception(f"Fatal error processing {file_path}")
+        raise e
 
 def main():
     parser = argparse.ArgumentParser()
@@ -165,7 +192,7 @@ def main():
 
     # Timestamped output folder + file logging, mirroring driver_pair.py
     output_dir = Path(cfg['data']['output_dir'])
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = output_dir / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -197,15 +224,21 @@ def main():
         # RAW Mode
         logger.info("Configuration points to raw data. Generating points batches on-the-fly.")
         
-        # Use a subfolder in the run directory for the temporary batch files
-        # This keeps the original data directory clean
-        cache_dir = output_dir / "points_cache"
-        
         # Default batch size for files (not to be confused with solver batch_size)
-        # We try to infer from config or use a reasonable default.
-        # cfg['data']['batch_size'] isn't standard, but we can look for it.
-        # Otherwise 30000 is the convention.
         file_batch_size = cfg['data'].get('file_batch_size', 30000)
+
+        # Determine where to save the points
+        # If points_dir is specified (even if commented out in user config, we assume the user might have uncommented it or we check if it exists in the dict),
+        # use it. Otherwise, create a default in data/points_raw_...
+        points_dest = cfg['data'].get('points_dir')
+        if points_dest:
+             cache_dir = Path(points_dest)
+        else:
+             cache_dir = Path(f"data/points_raw_{file_batch_size}")
+        
+        logger.info(f"Points will be cached/saved to: {cache_dir}")
+        
+        # files = preprocess_points_from_raw(...) uses this output_dir
         
         files = preprocess_points_from_raw(
             input_dir=raw_A_dir,
@@ -281,6 +314,13 @@ def main():
         with mp.Pool(processes=num_workers, initializer=init_worker, initargs=(x_global, log_queue)) as pool:
             # Map tasks to workers
             results = pool.map(process_file, tasks, chunksize=1)
+    except BaseException:
+        logger.exception("Fatal error in worker pool; terminating.")
+        try:
+            queue_listener.stop()
+        except Exception:
+            pass
+        sys.exit(1)
     finally:
         # Ensure all pending log records are flushed to disk.
         try:
@@ -311,6 +351,29 @@ def main():
         save_path,
     )
     logger.info(f"Saved {save_path}")
+
+    # Visualization (Always enabled, stride=5)
+    try:
+        from LF_linearsys.utils.visualize_slices import visualize_reconstruction_and_reprojection
+
+        out_dir = output_dir / "viz"
+
+        logger.info("Starting mandatory visualization (stride=5)...")
+        visualize_reconstruction_and_reprojection(
+            vol=x_global.detach().cpu().float(),
+            output_dir=out_dir,
+            threshold_A=float(cfg["data"].get("threshold_A", 0.1) or 0.1),
+            data_dir=cfg["data"].get("data_dir"),
+            raw_A_dir=cfg["data"].get("raw_A_dir"),
+            raw_b_dir=cfg["data"].get("raw_b_dir"),
+            downsampling_rate=float(cfg["data"].get("downsampling_rate", 0.125) or 0.125),
+            scale_factor=float(cfg["data"].get("scale_factor", 8.0) or 8.0),
+            stride_pairs=5,
+            make_z_scan_video=True,
+        )
+        logger.info(f"Saved visualizations to {out_dir}")
+    except Exception as e:
+        logger.warning(f"Visualization failed: {e}")
 
     # Optional: export snapshot + mesh (similar to driver_pair.py)
     try:

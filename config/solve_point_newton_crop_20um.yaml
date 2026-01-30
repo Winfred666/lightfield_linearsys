@@ -1,0 +1,16 @@
+data:
+  points_dir: "data/points/crop_20um/ds1p0"
+  output_dir: "result/solve_point/newton_crop_20um"
+  batch_pattern: "points_batch_*.pt"
+  threshold_A: 0.1
+  threshold_b: null
+
+solver:
+  type: "newton"
+  lambda_reg: 0.001
+  n_iter: 40
+  positivity: true
+  batch_size: 2000
+
+device: "cuda"
+mesh_iso: [1.0, 2.0, 4.0]

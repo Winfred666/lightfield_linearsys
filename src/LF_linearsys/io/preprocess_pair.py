@@ -15,6 +15,83 @@ from LF_linearsys.io.raw_pairs import find_raw_pairs
 import time
 
 
+def _parse_int_tuple(s: str, *, n: int, name: str) -> tuple[int, ...]:
+    parts = [p.strip() for p in s.replace("(", "").replace(")", "").split(",") if p.strip() != ""]
+    if len(parts) != n:
+        raise ValueError(f"{name} must have {n} integers, got {len(parts)} from: {s!r}")
+    try:
+        return tuple(int(p) for p in parts)
+    except ValueError as e:
+        raise ValueError(f"{name} must be integers, got: {s!r}") from e
+
+
+def _validate_and_normalize_crop_boxes(
+    *,
+    crop_box_b: tuple[int, int, int, int] | None,
+    crop_box_A: tuple[int, int, int, int, int, int] | None,
+    img_shape_yx: tuple[int, int],
+    vol_shape_xyz: tuple[int, int, int],
+    scale_factor: float,
+) -> tuple[
+    tuple[int, int, int, int] | None,
+    tuple[int, int, int, int, int, int] | None,
+]:
+    """Validate crop boxes and ensure A/B crop sizes are consistent.
+
+    Conventions:
+      - b is (Y, X). crop_box_b is (x_min, y_min, x_max, y_max) in that image space.
+      - A is (X, Y, Z). crop_box_A is (x_min, y_min, z_min, x_max, y_max, z_max).
+
+    Requirement:
+      - The crop boxes are specified in the *current* spaces before any new
+        processing in this function.
+      - They must already account for scaling ratios such that:
+          (x_max-x_min)_b == round((x_max-x_min)_A * scale_factor)
+          (y_max-y_min)_b == round((y_max-y_min)_A * scale_factor)
+    """
+    if crop_box_b is None and crop_box_A is None:
+        return None, None
+
+    if crop_box_b is None or crop_box_A is None:
+        raise ValueError("Must provide both crop_box_b and crop_box_A, or neither.")
+
+    x0b, y0b, x1b, y1b = crop_box_b
+    x0a, y0a, z0a, x1a, y1a, z1a = crop_box_A
+
+    if x0b < 0 or y0b < 0 or x1b <= x0b or y1b <= y0b:
+        raise ValueError(f"Invalid crop_box_b={crop_box_b}. Expected (x0,y0,x1,y1) with x1>x0,y1>y0 and >=0")
+    if x0a < 0 or y0a < 0 or z0a < 0 or x1a <= x0a or y1a <= y0a or z1a <= z0a:
+        raise ValueError(
+            f"Invalid crop_box_A={crop_box_A}. Expected (x0,y0,z0,x1,y1,z1) with max>min and >=0"
+        )
+
+    Y_i, X_i = img_shape_yx
+    X_v, Y_v, Z_v = vol_shape_xyz
+    if x1b > X_i or y1b > Y_i:
+        raise ValueError(f"crop_box_b={crop_box_b} out of bounds for image shape (Y,X)={img_shape_yx}")
+    if x1a > X_v or y1a > Y_v or z1a > Z_v:
+        raise ValueError(f"crop_box_A={crop_box_A} out of bounds for volume shape (X,Y,Z)={vol_shape_xyz}")
+
+    if scale_factor <= 0:
+        raise ValueError(f"scale_factor must be > 0, got {scale_factor}")
+
+    dx_a = x1a - x0a
+    dy_a = y1a - y0a
+    dx_b = x1b - x0b
+    dy_b = y1b - y0b
+
+    exp_dx_b = int(round(dx_a * scale_factor))
+    exp_dy_b = int(round(dy_a * scale_factor))
+    if dx_b != exp_dx_b or dy_b != exp_dy_b:
+        raise ValueError(
+            "crop boxes mismatch scaling ratio. "
+            f"Got crop_box_A size (dx,dy)=({dx_a},{dy_a}), scale_factor={scale_factor}. "
+            f"Expected crop_box_b size (dx,dy)=({exp_dx_b},{exp_dy_b}) but got ({dx_b},{dy_b})."
+        )
+
+    return crop_box_b, crop_box_A
+
+
 def save_pair_h5(h5_path: Path, A_cpu: torch.Tensor, b_cpu: torch.Tensor) -> None:
     """Save a processed (A,b) pair to an HDF5 file.
 
@@ -46,6 +123,8 @@ def preprocess_one_pair(
     img_path: Path,
     downsampling_rate: float,
     scale_factor: float = 8.0,
+    crop_box_b: tuple[int, int, int, int] | None = None,
+    crop_box_A: tuple[int, int, int, int, int, int] | None = None,
     device: torch.device | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Read+process a single (volume,image) pair into (A,b) tensors.
@@ -66,6 +145,24 @@ def preprocess_one_pair(
     img = read_image(img_path)   # (Y, X) numpy
     img = torch.from_numpy(img).float()
 
+    # Validate + apply manual crop *before* any new processing.
+    # User provided crop boxes are expected to already consider scale ratios.
+    effective_vol_scale = scale_factor * downsampling_rate
+    crop_box_b, crop_box_A = _validate_and_normalize_crop_boxes(
+        crop_box_b=crop_box_b,
+        crop_box_A=crop_box_A,
+        img_shape_yx=tuple(img.shape),
+        vol_shape_xyz=tuple(vol.shape),
+        scale_factor=scale_factor,
+    )
+    if crop_box_b is not None and crop_box_A is not None:
+        x0b, y0b, x1b, y1b = crop_box_b
+        x0a, y0a, z0a, x1a, y1a, z1a = crop_box_A
+        # img is (Y, X)
+        img = img[y0b:y1b, x0b:x1b]
+        # vol is (X, Y, Z)
+        vol = vol[x0a:x1a, y0a:y1a, z0a:z1a]
+
     # Move to device
     vol = vol.to(device)
     img = img.to(device)
@@ -79,7 +176,7 @@ def preprocess_one_pair(
 
     # Calculate effective scale for Volume (A)
     # We want to match the downsampled image space.
-    effective_vol_scale = scale_factor * downsampling_rate
+    # NOTE: effective_vol_scale already computed above for optional crop validation.
 
     # Optimization: Crop Volume BEFORE scaling to save memory.
     X_v_orig, Y_v_orig, Z_v_orig = vol.shape
@@ -100,21 +197,42 @@ def preprocess_one_pair(
         vol = vol[:, start_y_v: start_y_v + target_Y_lowres, :]
 
     # Chunked Scaling on GPU to avoid OOM
+    Z_v_curr = vol.shape[2]
+    chunk_size = 25
+    num_chunks = (Z_v_curr + chunk_size - 1) // chunk_size
+    
     Z_chunks = []
     with torch.no_grad():
-        for i in range(4):
-            z_start_in = i * 25
-            # For the first 3 chunks, we need +1 overlap for correct interpolation at the boundary
-            if i < 3:
-                z_end_in = (i + 1) * 25 + 1
+        for i in range(num_chunks):
+            z_start_in = i * chunk_size
+            
+            # Ensure overlap for interpolation if not the last chunk
+            if i < num_chunks - 1:
+                z_end_in = min((i + 1) * chunk_size + 1, Z_v_curr)
             else:
-                z_end_in = 100
+                z_end_in = Z_v_curr
+            
+            # If slice is empty or invalid, skip
+            if z_start_in >= z_end_in:
+                continue
 
             vol_chunk = vol[:, :, z_start_in: z_end_in]
+            
+            # Calculate local z target size for this chunk
+            # The chunk covers input range [z_start_in, z_end_in)
+            # The output should cover [z_start_in * scale, z_end_target * scale)
+            # But wait, purely scaling a chunk independently requires care with boundary alignment.
+            # The original code just appended results.
+            
             vol_chunk_scaled = scale_volume(vol_chunk, scale_factor=effective_vol_scale)
 
-            # Crop output to target Z size
-            target_z_chunk = int(25 * effective_vol_scale)
+            # Crop output to target Z size corresponding to the *valid* part of this chunk
+            # Valid input size is chunk_size (except last one).
+            # Output size should be valid_input_size * scale.
+            
+            valid_input_z = min((i + 1) * chunk_size, Z_v_curr) - z_start_in
+            target_z_chunk = int(valid_input_z * effective_vol_scale)
+            
             vol_chunk_scaled = vol_chunk_scaled[:, :, :target_z_chunk]
 
             # Move to CPU immediately
@@ -215,7 +333,15 @@ def check_dimensions():
     print("-" * 20)
 
 
-def preprocess_dataset(output_dir, input_dir, img_dir, downsampling_rate, scale_factor=8.0):
+def preprocess_dataset(
+    output_dir,
+    input_dir,
+    img_dir,
+    downsampling_rate,
+    scale_factor=8.0,
+    crop_box_b: tuple[int, int, int, int] | None = None,
+    crop_box_A: tuple[int, int, int, int, int, int] | None = None,
+):
     """
     Preprocesses the dataset:
     1. Reads pairs from input_dir.
@@ -253,6 +379,8 @@ def preprocess_dataset(output_dir, input_dir, img_dir, downsampling_rate, scale_
             img_path=img_path,
             downsampling_rate=downsampling_rate,
             scale_factor=scale_factor,
+            crop_box_b=crop_box_b,
+            crop_box_A=crop_box_A,
             device=device,
         )
 
@@ -301,6 +429,25 @@ if __name__ == "__main__":
         help="Skip the initial dimension sanity check.",
     )
 
+    parser.add_argument(
+        "--crop-box-b",
+        type=str,
+        default=None,
+        help=(
+            "Manual crop box for b in image coordinates, format 'x0,y0,x1,y1'. "
+            "NOTE: x indexes the 2nd dim of b (width), y indexes the 1st dim (height)."
+        ),
+    )
+    parser.add_argument(
+        "--crop-box-a",
+        type=str,
+        default=None,
+        help=(
+            "Manual crop box for A in volume coordinates, format 'x0,y0,z0,x1,y1,z1' where A is (X,Y,Z). "
+            "Must be consistent with crop_box_b via effective_vol_scale=scale_factor*downsampling_rate."
+        ),
+    )
+
     args = parser.parse_args()
 
     # Save into a subfolder of output_dir tagged by downsampling rate.
@@ -311,10 +458,15 @@ if __name__ == "__main__":
     if not args.skip_dimension_check:
         check_dimensions()
 
+    crop_box_b = _parse_int_tuple(args.crop_box_b, n=4, name="crop_box_b") if args.crop_box_b else None
+    crop_box_A = _parse_int_tuple(args.crop_box_a, n=6, name="crop_box_A") if args.crop_box_a else None
+
     preprocess_dataset(
         output_dir=args.output_dir,
         input_dir=args.input_dir,
         img_dir=args.img_dir,
         downsampling_rate=args.downsampling_rate,
         scale_factor=args.scale_factor,
+        crop_box_b=crop_box_b,
+        crop_box_A=crop_box_A,
     )

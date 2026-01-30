@@ -1,0 +1,31 @@
+# Configuration for Light Field Solver (ISTA) - Synthetic Bunny
+
+data:
+  raw_A_dir: "data/raw/lightsheet_vol_6.9"
+  raw_b_dir: "data/synthetic/bunny/measurements"
+  
+  # Crucial: 1.0 means no scaling/downsampling, use exact raw size.
+  downsampling_rate: 1.0 
+  scale_factor: 1.0
+  
+  output_dir: "result/solve_pair/ista_bunny"
+  init_global_x: null
+
+  joint_pair_num: 15
+  max_pairs: null
+  threshold_A: 0.0001
+  threshold_b: null
+
+solver:
+  type: "ista"
+  n_iter: 2000
+  lambda_reg: 0.0
+  lipchitz: 200.0
+
+masking:
+  enabled: false
+  assume_non_negative_A: true
+
+device: "cuda"
+
+mesh_iso: [0.5, 0.9]

@@ -110,15 +110,36 @@ def parse_log_and_plot(filepath):
             curr_start = None
             
             for entry in w_lines:
-                # "PointLinearSystem:" starts solve
-                if "PointLinearSystem:" in entry['line']:
-                    curr_start = entry['ts']
-                # "Finished batch" ends solve
-                elif "Finished batch" in entry['line']:
-                    if curr_start:
-                        dur = (entry['ts'] - curr_start).total_seconds()
+                # "START" marks the beginning of file processing (IO + Solve)
+                if " - INFO - START" in entry['line']:
+                    # Reset solve start for this file
+                    curr_solve_start = None
+                    file_start_ts = entry['ts']
+                
+                # The first "PointLinearSystem:" after START marks the end of IO and start of Solve
+                elif "PointLinearSystem:" in entry['line']:
+                    if curr_solve_start is None:
+                        curr_solve_start = entry['ts']
+                
+                # "Finished" ends solve for a file
+                # If "Finished" (file end) is missing, we use "Finished batch" as a proxy for progress
+                elif " - INFO - Finished" in entry['line']:
+                    if curr_solve_start:
+                        dur = (entry['ts'] - curr_solve_start).total_seconds()
                         w_solve += dur
-                        curr_start = None
+                        curr_solve_start = None
+                elif "Finished batch" in entry['line'] and curr_solve_start:
+                    # Update solve time continuously or just at the end of the last batch?
+                    # Let's update dur to latest batch end.
+                    dur = (entry['ts'] - curr_solve_start).total_seconds()
+                    # We don't stop here, we keep updating until we see "Finished" or next "START"
+                    # But we record it in case the log is truncated or missing the final "Finished"
+                    last_batch_dur = dur
+
+            # Fallback for truncated logs
+            if curr_solve_start and 'last_batch_dur' in locals():
+                w_solve += last_batch_dur
+                curr_solve_start = None
             
             w_io = max(0, w_total - w_solve)
             

@@ -5,6 +5,7 @@ __pycache__/
 
 # Distribution / packaging
 *.egg-info/
+*.zip
 
 # Unit test / coverage reports
 .pytest_cache/

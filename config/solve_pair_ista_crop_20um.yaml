@@ -1,0 +1,22 @@
+data:
+  data_dir: "data/processed/crop_20um/ds1"
+  output_dir: "result/solve_pair/ista_crop_20um"
+  downsampling_rate: 1.0
+  scale_factor: 8.0
+  joint_pair_num: 15
+  max_pairs: null
+  threshold_A: 0.0001
+  threshold_b: null
+
+solver:
+  type: "ista"
+  n_iter: 2000
+  lambda_reg: 0.0
+  lipchitz: 200.0
+
+masking:
+  enabled: false
+  assume_non_negative_A: true
+
+device: "cuda"
+mesh_iso: [1.0, 2.0, 4.0]
