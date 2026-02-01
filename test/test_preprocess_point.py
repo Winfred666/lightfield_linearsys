@@ -120,7 +120,19 @@ def test_preprocess_point_raw_mode(monkeypatch):
     X, Y, Z = 2, 2, 3
     num_pairs = len(indices)
 
-    def fake_preprocess_one_pair(*, vol_path, img_path, downsampling_rate, scale_factor=8.0, device=None):
+    seen_kwargs = []
+
+    def fake_preprocess_one_pair(
+        *,
+        vol_path,
+        img_path,
+        downsampling_rate,
+        scale_factor=8.0,
+        crop_box_b=None,
+        crop_box_A=None,
+        device=None,
+    ):
+        seen_kwargs.append({"crop_box_b": crop_box_b, "crop_box_A": crop_box_A})
         # Encode idx from filename
         idx = int(Path(vol_path).stem.split('_')[-1])
         m = indices.index(idx)  # 0..2
@@ -135,18 +147,28 @@ def test_preprocess_point_raw_mode(monkeypatch):
 
     monkeypatch.setattr(preprocess_pair, "preprocess_one_pair", fake_preprocess_one_pair)
 
+    crop_box_b = (10, 20, 30, 40)
+    crop_box_A = (1, 2, 3, 4, 5, 6)
+
     written = pp.preprocess_points_from_raw(
         input_dir=str(input_dir),
         img_dir=str(img_dir),
         output_dir=str(out_dir),
         downsampling_rate=0.5,
         scale_factor=8.0,
+        crop_box_b=crop_box_b,
+        crop_box_A=crop_box_A,
         batch_size=10_000,
         batches_per_pass=1,
         limit_batches=1,
         save_dtype="float32",
         log_every_pairs=1,
     )
+
+    # preprocess_points_from_raw calls preprocess_one_pair once to probe dims, then once per pair.
+    assert len(seen_kwargs) == 1 + len(indices)
+    assert all(k["crop_box_b"] == crop_box_b for k in seen_kwargs)
+    assert all(k["crop_box_A"] == crop_box_A for k in seen_kwargs)
 
     pt_path = out_dir / "points_batch_0000.pt"
     assert pt_path in written or pt_path.exists()

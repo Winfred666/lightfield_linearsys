@@ -99,13 +99,15 @@ def numerical_sort_key(p: Path):
         return int(numbers[-1])
     return p.name
 
-def generate_measurements(gt_vol_path, raw_A_dir, output_dir):
+def generate_measurements(gt_vol_path, raw_A_dir, output_dir, *, noise_index: int = 0):
     print(f"Loading GT volume from {gt_vol_path}...")
     gt_vol = torch.load(gt_vol_path, map_location='cpu') # (X, Y, Z)
     print(f"GT Volume shape: {gt_vol.shape}")
     
     raw_A_dir = Path(raw_A_dir)
     output_dir = Path(output_dir)
+    if noise_index is not None:
+        output_dir = output_dir / f"noise_m{int(noise_index):04d}"
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Find all A files
@@ -132,16 +134,14 @@ def generate_measurements(gt_vol_path, raw_A_dir, output_dir):
         # Convert to (Y, X) for image format
         b_yx = b_xy.T # (Y, X)
 
-        # Apply Matern GRF noise to the first measurement
-        if i == 0:
-            print("Applying Matern GRF noise to the first measurement...")
+        # Apply Matérn GRF noise to one selected measurement (by index in the loop).
+        if int(i) == int(noise_index):
+            print(f"Applying Matérn GRF noise to measurement i={i} (file idx={idx})...")
             
             H, W = b_yx.shape
             grid_size = max(H, W)
             
-            # User requested: relatively larger alpha (smoother) and smaller tau (smoother/longer correlation)
-            # Defaults: alpha=5.0, tau=2.0
-            # Chosen: alpha=6.0, tau=1.5
+            # Noise hyperparams are intentionally fixed / hard-coded.
             noise_field = generate_2d_matern_grf(
                 grid_size=grid_size,
                 alpha=20.0,
@@ -162,7 +162,7 @@ def generate_measurements(gt_vol_path, raw_A_dir, output_dir):
             b_yx_noisy = b_yx + noise_toadd
             
             # Save debug for visualization
-            debug_path = output_dir / "debug_measurement_0.pt"
+            debug_path = output_dir / f"debug_measurement_{idx}.pt"
             torch.save((A, b_yx_noisy), debug_path)
             print(f"Saved debug measurement (A, b_noisy) to {debug_path}")
             
@@ -184,6 +184,15 @@ if __name__ == "__main__":
     parser.add_argument("--gt-vol-path", default="data/synthetic/bunny/gt_volume.pt")
     parser.add_argument("--raw-A-dir", default="data/raw/lightsheet_vol_6.9")
     parser.add_argument("--output-dir", default="data/synthetic/bunny/measurements")
+    parser.add_argument(
+        "--noise-index",
+        type=int,
+        default=0,
+        help=(
+            "Which measurement (0-based index in sorted Interp_Vol_ID_*.pt files) to inject Matérn GRF noise into. "
+            "The output dir will be suffixed with noise_mXXXX."
+        ),
+    )
     args = parser.parse_args()
     
-    generate_measurements(args.gt_vol_path, args.raw_A_dir, args.output_dir)
+    generate_measurements(args.gt_vol_path, args.raw_A_dir, args.output_dir, noise_index=args.noise_index)

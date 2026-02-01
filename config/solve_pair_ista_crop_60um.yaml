@@ -19,4 +19,4 @@ masking:
   assume_non_negative_A: true
 
 device: "cuda"
-mesh_iso: [1.0, 2.0, 4.0]
+mesh_iso: [2.0, 4.0]

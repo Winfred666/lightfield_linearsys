@@ -1,21 +1,21 @@
 data:
   points_dir: "data/points/80um_imgs/ds0p5_30000"
-  
-  # raw_A_dir: "data/raw/lightsheet_vol_6.9"
-  # raw_b_dir: "data/raw/80um_imgs"
-  # downsampling_rate: 0.5
-  # scale_factor: 8.0 # Optional, default 8.0
-  # max_pairs: null # Limit input pairs for testing
-  # file_batch_size: 30000 # Points per batch file (cache)
+
+  # New RAW Mode (visualization also need it)
+  raw_A_dir: "data/raw/lightsheet_vol_6.9"
+  raw_b_dir: "data/raw/80um_imgs"
+  downsampling_rate: 0.5
+  scale_factor: 8.0 # Optional, default 8.0
+  file_batch_size: 30000 # Points per batch file (cache)
   
   output_dir: "result/solve_point/newton/80um_imgs/ds0p5_30000"
   batch_pattern: "points_batch_*.pt"
-  threshold_A: 0.1
+  threshold_A: null
   threshold_b: null
 
 solver:
   type: "newton" # Options: newton, ista
-  lambda_reg: 0.001
+  lambda_reg: 1.0e-4
   n_iter: 40
   positivity: true
   batch_size: 2000 # Sub-batch size for solving on GPU
@@ -24,4 +24,4 @@ device: "cuda" # or cpu
 
 # Optional: export mesh after reconstruction.
 # If omitted, no mesh is exported.
-mesh_iso: [1.0, 2.0, 4.0]
+mesh_iso: [2.0, 4.0]

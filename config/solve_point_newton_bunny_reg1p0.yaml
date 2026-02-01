@@ -1,0 +1,31 @@
+# Configuration for Point Newton Solver - Synthetic Bunny
+
+data:
+  # RAW Mode
+  raw_A_dir: "data/raw/lightsheet_vol_6.9"
+  raw_b_dir: "data/synthetic/bunny/measurements_120"
+  
+  # Crucial: 1.0 means no scaling/downsampling
+  downsampling_rate: 1.0
+  scale_factor: 1.0
+  file_batch_size: 30000 
+  
+  # Using a separate points cache for this synthetic run
+  points_dir: "data/points/bunny_raw_30000_noise120"
+
+  output_dir: "result/solve_point/newton_bunny"
+  batch_pattern: "points_batch_*.pt"
+  threshold_A: null
+  threshold_b: null
+
+solver:
+  type: "newton"
+  lambda_reg: 1.0
+  n_iter: 35
+  positivity: true
+  batch_size: 1000
+
+
+device: "cuda"
+
+mesh_iso: [0.5, 0.9]

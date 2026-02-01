@@ -54,12 +54,29 @@ class BatchedRegNewtonASSolver:
             
         # Precompute A^T A for each batch
         logger.info("Precomputing A^T A for Active Set Newton Solver...")
-        self.AtA = torch.bmm(self.system.At, self.system.A) # (B, N, N)
+        AtA = torch.bmm(self.system.At, self.system.A) # (B, N, N)
         
-        # Base Hessian H = AtA + lambda * I
-        # Regularization ensures PD if lambda > 0.
-        I = torch.eye(self.N, device=self.device).unsqueeze(0) # (1, N, N)
-        self.H_base = self.AtA + self.lambda_reg * I
+        # Base Hessian H = AtA + lambda * \Gamma, where \Gamma equals to $$\Gamma_{jj} = \frac{1}{\|A_{:j}\|^2 + \epsilon}$$
+        epsilon = 1e-8
+        A_norm = self.system.A.norm(dim=1) # (B, N) as our new regularization diagonal element to different row
+        
+        # Log statistics of A_norm as sensitivity of each variable.
+        a_norm_flat = A_norm.flatten()
+        logger.info(
+            "A_norm stats -- Mean: %.2e, Median: %.2e, Min: %.2e, Max: %.2e",
+            a_norm_flat.mean().item(),
+            a_norm_flat.median().item(),
+            a_norm_flat.min().item(),
+            a_norm_flat.max().item(),
+        )
+        gamma_diag = 1.0 / (A_norm ** 2 + epsilon)
+
+        # Deprecated stiff method before: use only uniform regularization for stability.
+        gamma_diag = torch.ones_like(gamma_diag)
+
+        # Regularization ensures PD if lambda > 0
+        self.H_base = AtA
+        self.H_base.diagonal(dim1=-2, dim2=-1).add_(self.lambda_reg * gamma_diag)
 
         # Log condition number of base Hessian
         # self._log_condition_number()
@@ -150,8 +167,9 @@ class BatchedRegNewtonASSolver:
                 L = torch.linalg.cholesky(H_k)
                 delta_x = torch.cholesky_solve(-grad.unsqueeze(2), L).squeeze(2)
             except RuntimeError:
-                # Fallback
-                delta_x = torch.linalg.solve(H_k, -grad.unsqueeze(2)).squeeze(2)
+                logger.warning("Cholesky failed at iter %d; falling back to torch.linalg.lstsq.", k)
+                rhs = (-grad).unsqueeze(2)  # (B,N,1)
+                delta_x = torch.linalg.lstsq(H_k, rhs).solution.squeeze(2)            
             
             # --- 5. Vectorized Projected Line Search ---
             f_x = self._compute_loss(x)

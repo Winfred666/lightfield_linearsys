@@ -37,4 +37,4 @@ device: "cuda" # "cuda" or "cpu"
 
 # Optional: export mesh after each pair update.
 # If omitted, defaults to 0.5.
-mesh_iso: [1.0, 2.0, 4.0]
+mesh_iso: [2.0, 4.0]

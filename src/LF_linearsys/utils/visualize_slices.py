@@ -620,6 +620,8 @@ def visualize_reconstruction_and_reprojection(
 	z_scan_fps: int = 20,
 	lightfield_overlay_alpha: float = 0.06,
 	num_slice_grid: int = 25,
+	crop_box_A: Iterable[int] | None = None,
+	crop_box_b: Iterable[int] | None = None,
 ) -> VisualizationOutputs:
 	"""Main reusable visualization entrypoint.
 
@@ -678,6 +680,8 @@ def visualize_reconstruction_and_reprojection(
 					downsampling_rate=downsampling_rate,
 					scale_factor=scale_factor,
 					device=torch.device("cpu"),
+					crop_box_A=crop_box_A,
+					crop_box_b=crop_box_b,
 				)
 
 				valid_z = compute_valid_z_indices(A, threshold_A=threshold_A)

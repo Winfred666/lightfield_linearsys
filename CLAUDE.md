@@ -52,6 +52,7 @@ For each new module or behavior change:
 - Document tensor axis conventions explicitly (e.g., volume is `(X, Y, Z)`; image is `(Y, X)`).
 - When touching preprocessing, add assertions and informative errors around shape alignment.
 - Avoid hard-coded absolute paths; use project-relative paths (e.g., `data/raw/...`).
+- If writing disposable shell, just write to data/xxx.sh or data/xxx.py so that it won't be included in our repo.
 
 ## Notes
 

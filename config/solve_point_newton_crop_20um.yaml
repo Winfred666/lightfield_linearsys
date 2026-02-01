@@ -2,7 +2,7 @@ data:
   points_dir: "data/points/crop_20um/ds1p0"
   output_dir: "result/solve_point/newton_crop_20um"
   batch_pattern: "points_batch_*.pt"
-  threshold_A: 0.1
+  threshold_A: null
   threshold_b: null
 
 solver:

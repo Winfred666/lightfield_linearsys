@@ -92,6 +92,12 @@ def convert_emd_to_pt(emd_path: Path, output_dir: Path) -> Path:
     # Convert to torch tensor
     volume_tensor = torch.from_numpy(volume_np).float()
 
+    # Unnormalize by multiplying with fixed value 255
+    # Based on analysis of .tif images: 20um=255, 60um=255, 80um=239, 120um=255
+    # Using 255 as conservative maximum for all cases
+    volume_tensor = volume_tensor * 255.0
+    logger.info(f"Unnormalized reconstruction by multiplying with fixed value 255.0")
+
     # Save as .pt file with 'reconstruction' key
     torch.save({"reconstruction": volume_tensor}, output_path)
     logger.info(f"Saved reconstruction to {output_path} (shape: {volume_tensor.shape})")
@@ -138,7 +144,7 @@ def main() -> None:
     for emd_file in emd_files:
         logger.info(f"  - {emd_file.name}")
 
-    # Convert each EMD file
+    # Convert each EMD file (always unnormalize with fixed value 255)
     pt_files = []
     for emd_file in emd_files:
         try:

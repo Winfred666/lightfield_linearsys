@@ -321,6 +321,8 @@ def preprocess_points_from_raw(
     output_dir: str,
     downsampling_rate: float,
     scale_factor: float = 8.0,
+    crop_box_b: Optional[Tuple[int, int, int, int]] = None,
+    crop_box_A: Optional[Tuple[int, int, int, int, int, int]] = None,
     max_pairs: Optional[int] = None,
     batch_size: int = 10000,
     batches_per_pass: int = 1,
@@ -357,6 +359,8 @@ def preprocess_points_from_raw(
         img_path=pairs[0].img_path,
         downsampling_rate=downsampling_rate,
         scale_factor=scale_factor,
+        crop_box_b=crop_box_b,
+        crop_box_A=crop_box_A,
         device=device,
     )
     X_dim, Y_dim, Z_dim = A0_cpu.shape
@@ -421,6 +425,8 @@ def preprocess_points_from_raw(
                 img_path=pair.img_path,
                 downsampling_rate=downsampling_rate,
                 scale_factor=scale_factor,
+                crop_box_b=crop_box_b,
+                crop_box_A=crop_box_A,
                 device=device,
             )
 

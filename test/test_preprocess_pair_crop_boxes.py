@@ -21,10 +21,11 @@ def test_preprocess_one_pair_manual_crop_boxes(monkeypatch):
     monkeypatch.setattr(pp, "read_image", lambda p: img.copy())
     monkeypatch.setattr(pp, "scale_volume", lambda v, scale_factor: v)
 
-    # effective_vol_scale = scale_factor * downsampling_rate = 2.0 * 0.5 = 1.0
-    # So crop sizes must match exactly.
+    # Crop boxes must satisfy the strict scaling rule enforced by preprocess_pair:
+    #   (dx,dy)_b == round((dx,dy)_A * scale_factor)
+    # Here scale_factor=2.0, so b crop must be 2x A crop in x/y.
     crop_box_A = (1, 1, 1, 5, 4, 3)  # dx=4, dy=3, dz=2
-    crop_box_b = (2, 3, 6, 6)        # dx=4, dy=3  (x0,y0,x1,y1)
+    crop_box_b = (2, 3, 10, 9)       # dx=8, dy=6  (x0,y0,x1,y1)
 
     A_cpu, b_cpu = pp.preprocess_one_pair(
         vol_path=torch.tensor(0),  # dummy
@@ -77,10 +78,10 @@ def test_preprocess_one_pair_manual_crop_mismatch_raises(monkeypatch):
     monkeypatch.setattr(pp, "read_image", lambda p: img)
     monkeypatch.setattr(pp, "scale_volume", lambda v, scale_factor: v)
 
-    # effective_vol_scale = 2.0 * 0.5 = 1.0
-    # A crop dx=4,dy=3 but b crop dx=5 -> mismatch.
+    # scale_factor=2.0; A crop dx=4,dy=3 expects b crop dx=8,dy=6.
+    # Here we intentionally mismatch dx to ensure strict validation raises.
     crop_box_A = (1, 1, 1, 5, 4, 3)  # dx=4, dy=3
-    crop_box_b = (2, 3, 7, 6)        # dx=5, dy=3
+    crop_box_b = (2, 3, 11, 9)       # dx=9 (mismatch), dy=6
 
     with pytest.raises(ValueError, match=r"crop boxes mismatch"):
         pp.preprocess_one_pair(

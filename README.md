@@ -96,13 +96,25 @@ python scripts/visualize_raw.py \
     --downsampling-rate 0.125
 ```
 
-## Legacy Preprocessing (Deprecated)
+## Two-step Preprocessing
 
-*Note: The old workflow involved converting raw data into `pair_*.h5` files or `points_batch_*.pt` files. This is now deprecated as it consumes significant disk space and I/O time.*
+*Note: The old workflow involved converting raw data into `pair_*.h5` files or `points_batch_*.pt` files. This is slow as it consumes significant disk space and I/O time.*. 
 
 If you still need to use pre-processed files:
-1. Run `src/io/preprocess_pair.py` or `src/io/preprocess_point.py` to generate intermediate files.
+
+1. Run `src/io/preprocess_pair.py` to generaet `pair_<num>.h5` and `src/io/preprocess_point.py` to generate `points_batch_<num:04d>.pt` as intermediate files.
+
+Crop is supported to both measurement b and A. Make sure that crop ratio compat with scale factor, e.g. size of --crop-box-b (x_min, y_min, z_min, x_max, y_max, z_max) is exactly 8 times bigger than --crop-box-a (x_min, y_min, x_max, y_max) in X and Y dim.
+
+```shell
+python src/LF_linearsys/io/preprocess_pair.py --input-dir "data/raw/lightsheet_vol_6.9" --img-dir "data/raw/120um_imgs" --output-dir "data/processed/crop_120um" --downsampling-rate 1.0 --scale-factor 8.0 --crop-box-b "1140,830,1652,1342" --crop-box-a "5,268,18,69,332,82"
+```
+
+
 2. Update config files to use `data_dir` (for pairs) or `points_dir` (for points) instead of `raw_*_dir`.
+
+
+
 
 ## Troubleshooting
 

@@ -219,8 +219,8 @@ def main():
     logger.info(f"Output directory: {output_dir}")
     
     # --- File Discovery (Raw vs Processed) ---
-    raw_A_dir = cfg['data'].get('raw_A_dir')
-    if raw_A_dir:
+    points_dir = cfg['data'].get('points_dir')
+    if not points_dir or not Path(points_dir).exists():
         # RAW Mode
         logger.info("Configuration points to raw data. Generating points batches on-the-fly.")
         
@@ -239,13 +239,14 @@ def main():
         logger.info(f"Points will be cached/saved to: {cache_dir}")
         
         # files = preprocess_points_from_raw(...) uses this output_dir
-        
         files = preprocess_points_from_raw(
-            input_dir=raw_A_dir,
+            input_dir=cfg['data']['raw_A_dir'],
             img_dir=cfg['data']['raw_b_dir'],
             output_dir=cache_dir,
             downsampling_rate=cfg['data']['downsampling_rate'],
             scale_factor=cfg['data'].get('scale_factor', 8.0),
+            crop_box_b=cfg['data'].get('crop_box_b'),
+            crop_box_A=cfg['data'].get('crop_box_A'),
             max_pairs=cfg['data'].get('max_pairs'),
             batch_size=file_batch_size
         )
@@ -253,7 +254,7 @@ def main():
         
     else:
         # Processed Mode (Legacy)
-        data_dir = Path(cfg['data']['points_dir'])
+        data_dir = Path(points_dir)
         pattern = cfg['data']['batch_pattern']
         files = sorted(list(data_dir.glob(pattern)))
         logger.info(f"Found {len(files)} batch files in {data_dir} matching {pattern}")
@@ -366,6 +367,8 @@ def main():
             data_dir=cfg["data"].get("data_dir"),
             raw_A_dir=cfg["data"].get("raw_A_dir"),
             raw_b_dir=cfg["data"].get("raw_b_dir"),
+            crop_box_A=cfg["data"].get("crop_box_A"),
+            crop_box_b=cfg["data"].get("crop_box_b"),
             downsampling_rate=float(cfg["data"].get("downsampling_rate", 0.125) or 0.125),
             scale_factor=float(cfg["data"].get("scale_factor", 8.0) or 8.0),
             stride_pairs=5,
