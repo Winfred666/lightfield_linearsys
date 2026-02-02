@@ -135,6 +135,7 @@ def main():
     print(f"Loading {pt_path}...")
     vol_np = _load_reconstruction_volume(pt_path)
     _print_stats("volume", vol_np)
+    vol_np = np.clip(vol_np, a_min=0.0, a_max=None)
 
     # PyVista grid
     grid = pv.ImageData()
@@ -157,13 +158,17 @@ def main():
     p99 = float(np.percentile(finite_vals, 99))
     vmax_vis = max(p99, 1e-12)
 
+    # We always want the lower clim bound to start at 0 (instead of min(volume)).
+    # This makes near-zero positive signal visible and avoids negative scaling.
+    vmin_vis = 0.0
+
     # Clamp color range to [0, p99] by default so faint positive signal becomes visible.
     # Color range is user-controllable via sliders; start with [0, p99]
-    clim_low0 = 0.0
+    clim_low0 = vmin_vis
     clim_high0 = vmax_vis
 
     # Opacity transfer will be built over [0, p99] as well.
-    vmin, vmax = 0.0, vmax_vis
+    vmin, vmax = vmin_vis, vmax_vis
 
     # Default threshold: 0 means "show everything above 0".
     thr0 = 0.0

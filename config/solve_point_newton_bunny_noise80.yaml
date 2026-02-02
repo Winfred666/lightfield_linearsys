@@ -2,10 +2,10 @@ data:
   batch_pattern: points_batch_*.pt
   downsampling_rate: 1.0
   file_batch_size: 30000
-  output_dir: result/solve_point/newton_bunny/reg_1e-5
-  points_dir: data/points/bunny_raw_30000_noise120
+  output_dir: result/solve_point/newton_bunny/noise_80
+  points_dir: data/points/bunny_raw_30000_noise80
   raw_A_dir: data/raw/lightsheet_vol_6.9
-  raw_b_dir: data/synthetic/bunny/measurements_120
+  raw_b_dir: data/synthetic/bunny/measurements_80
   scale_factor: 1.0
   threshold_A: null
   threshold_b: null
@@ -15,7 +15,7 @@ mesh_iso:
 - 0.9
 solver:
   batch_size: 1000
-  lambda_reg: 1.0e-05
+  lambda_reg: 1.0e-5
   n_iter: 35
   positivity: true
   type: newton

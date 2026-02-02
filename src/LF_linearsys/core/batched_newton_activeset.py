@@ -59,7 +59,6 @@ class BatchedRegNewtonASSolver:
         # Base Hessian H = AtA + lambda * \Gamma, where \Gamma equals to $$\Gamma_{jj} = \frac{1}{\|A_{:j}\|^2 + \epsilon}$$
         epsilon = 1e-8
         A_norm = self.system.A.norm(dim=1) # (B, N) as our new regularization diagonal element to different row
-        
         # Log statistics of A_norm as sensitivity of each variable.
         a_norm_flat = A_norm.flatten()
         logger.info(
@@ -69,11 +68,10 @@ class BatchedRegNewtonASSolver:
             a_norm_flat.min().item(),
             a_norm_flat.max().item(),
         )
-        gamma_diag = 1.0 / (A_norm ** 2 + epsilon)
-
-        # Deprecated stiff method before: use only uniform regularization for stability.
-        gamma_diag = torch.ones_like(gamma_diag)
-
+        # WARNING: consistant with regularization of object function, do not 
+        # gamma_diag = 1.0 / (A_norm ** 2 + epsilon)
+        gamma_diag = torch.ones_like(A_norm)
+        
         # Regularization ensures PD if lambda > 0
         self.H_base = AtA
         self.H_base.diagonal(dim1=-2, dim2=-1).add_(self.lambda_reg * gamma_diag)

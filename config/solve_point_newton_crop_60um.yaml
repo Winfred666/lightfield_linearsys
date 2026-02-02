@@ -1,22 +1,20 @@
 data:
   # Preprocess-mode. Comment out points_dir to enable.
+  # Where to cache/save points batches generated from raw.
   points_dir: "data/points/crop_60um/ds1p0"
 
   # WARNING: when visualizing, still need processed data.
-  # raw_A_dir: "data/raw/lightsheet_vol_6.9"
-  # raw_b_dir: "data/raw/60um_imgs"
-  # downsampling_rate: 1.0
-  # scale_factor: 8.0
-
+  raw_A_dir: "data/raw/lightsheet_vol_6.9"
+  raw_b_dir: "data/raw/120um_imgs"
+  downsampling_rate: 1.0
+  scale_factor: 8.0
+  
+  crop_box_b: [1140, 830, 1652, 1342]
+  crop_box_A: [5, 268, 18, 69, 332, 82]
   # Manual crop boxes (must be consistent with effective_vol_scale=scale_factor*downsampling_rate)
   # b is (Y,X); crop_box_b is (x0,y0,x1,y1)
   # A is (X,Y,Z); crop_box_A is (x0,y0,z0,x1,y1,z1)
-  # crop_box_b: [1140, 830, 1652, 1342]
-  # crop_box_A: [5, 268, 18, 69, 332, 82]
 
-  # Where to cache/save points batches generated from raw.
-  # If omitted, driver_point defaults to data/points_raw_<file_batch_size>.
-  # points_dir: "data/points/crop_60um/ds1p0"
 
   output_dir: "result/solve_point/newton_crop_60um"
   batch_pattern: "points_batch_*.pt"
@@ -25,7 +23,7 @@ data:
 
 solver:
   type: "newton"
-  lambda_reg: 0.001
+  lambda_reg: 1.0e-5
   n_iter: 40
   positivity: true
   batch_size: 2000

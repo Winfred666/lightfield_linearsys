@@ -1,5 +1,16 @@
 data:
   points_dir: "data/points/crop_80um/ds1p0"
+
+    # WARNING: when visualizing, still need processed data.
+  raw_A_dir: "data/raw/lightsheet_vol_6.9"
+  raw_b_dir: "data/raw/120um_imgs"
+  downsampling_rate: 1.0
+  scale_factor: 8.0
+  
+  crop_box_b: [1140, 830, 1652, 1342]
+  crop_box_A: [5, 268, 18, 69, 332, 82]
+
+
   output_dir: "result/solve_point/newton_crop_80um"
   batch_pattern: "points_batch_*.pt"
   threshold_A: null
@@ -7,7 +18,7 @@ data:
 
 solver:
   type: "newton"
-  lambda_reg: 0.001
+  lambda_reg: 1.0e-5
   n_iter: 40
   positivity: true
   batch_size: 2000

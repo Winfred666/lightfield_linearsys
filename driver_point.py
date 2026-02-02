@@ -73,10 +73,29 @@ def process_file(args):
 
         # Load data: IO time is the main bottleneck !!!
         data = torch.load(file_path, map_location='cpu')
-        
-        A_full = data['A']
-        b_full = data['b']
+
+        A_full = data['A'] # shape (B, pairs, N)
+        b_full = data['b'] # shape (B, pairs)
         coords_full = data['coords'] # (N, 2)
+        
+        # Filter omitted pairs if specified in config
+        omit_pairs = cfg['data'].get('omit_pairs', [])
+        if omit_pairs:
+            # Ensure omit_pairs is a list/tuple
+            if not isinstance(omit_pairs, (list, tuple)):
+                omit_pairs = [omit_pairs]
+            
+            num_pairs = A_full.shape[1]
+            keep_indices = [i for i in range(num_pairs) if i not in omit_pairs]
+            
+            if not keep_indices:
+                logger.warning(f"All pairs omitted for {file_path.name}! Proceeding with empty tensors (might fail).")
+            
+            keep_indices_tensor = torch.tensor(keep_indices, dtype=torch.long)
+            # A_full is (B, pairs, N), b_full is (B, pairs)
+            A_full = A_full[:, keep_indices_tensor, :]
+            b_full = b_full[:, keep_indices_tensor]
+            # logger.info(f"Omitted pairs {omit_pairs}. New shape A: {A_full.shape}")
         
         # Stop IO timing, start overhead for setup
         timer.stop()

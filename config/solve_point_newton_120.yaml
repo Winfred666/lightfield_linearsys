@@ -4,6 +4,7 @@ data:
   # Raw mode: visualization also need it.
   raw_A_dir: "data/raw/lightsheet_vol_6.9"
   raw_b_dir: "data/raw/120um_imgs"
+  omit_pairs: [0, 120]
   downsampling_rate: 0.5
   scale_factor: 8.0 # Optional, default 8.0
   file_batch_size: 30000 # Points per batch file (cache)
@@ -16,7 +17,7 @@ data:
 
 solver:
   type: "newton" # Options: newton, ista
-  lambda_reg: 1.0e-4
+  lambda_reg: 1.0e-5
   n_iter: 35
   positivity: true
   batch_size: 2000 # Sub-batch size for solving on GPU

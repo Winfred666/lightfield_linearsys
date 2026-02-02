@@ -144,7 +144,14 @@ def visualize_reprojection(b, b_pred, mse, psnr, out_path: Path, pair_name: str)
 	plt.close(fig)
 
 
-def visualize_slices(vol: torch.Tensor, out_path: Path, *, num_slices: int = 25):
+def visualize_slices(
+	vol: torch.Tensor,
+	out_path: Path,
+	*,
+	num_slices: int = 25,
+	per_slice_colorbar: bool = True,
+	robust_percentiles: tuple[float, float] = (1.0, 99.0),
+):
 	import matplotlib
 
 	matplotlib.use("Agg")
@@ -164,24 +171,41 @@ def visualize_slices(vol: torch.Tensor, out_path: Path, *, num_slices: int = 25)
 	fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows))
 	axes = np.asarray(axes).ravel()
 
-	vol_flat = vol.numpy().ravel()
-	if vol_flat.size > 0:
-		p99 = np.percentile(vol_flat, 99)
-		vmax = max(float(p99), 1e-6)
-	else:
-		vmax = 1.0
-
 	im = None
 	for i, idx in enumerate(indices):
 		slice_data = vol[:, :, int(idx)].numpy().T
-		im = axes[i].imshow(slice_data, cmap="viridis", vmin=0, vmax=vmax)
+
+		# Per-slice adaptive scaling (robust to outliers).
+		finite = slice_data[np.isfinite(slice_data)]
+		if finite.size > 0:
+			p_lo, p_hi = robust_percentiles
+			vmin = float(np.percentile(finite, p_lo))
+			vmax = float(np.percentile(finite, p_hi))
+			# If the slice is (nearly) constant or percentiles degenerate, fall back.
+			if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+				vmin = float(np.min(finite))
+				vmax = float(np.max(finite))
+			if vmax <= vmin:
+				vmin, vmax = 0.0, 1.0
+		else:
+			vmin, vmax = 0.0, 1.0
+
+		# Density is typically non-negative; keep the lower bound at >=0 for readability.
+		vmin = max(0.0, float(vmin))
+		vmax = max(float(vmax), vmin + 1e-12)
+
+		im = axes[i].imshow(slice_data, cmap="viridis", vmin=vmin, vmax=vmax)
 		axes[i].set_title(f"Z={int(idx)}")
 		axes[i].axis("off")
+		if per_slice_colorbar and im is not None:
+			fig.colorbar(im, ax=axes[i], fraction=0.046, pad=0.02)
 
 	for j in range(len(indices), len(axes)):
 		axes[j].axis("off")
 
-	if im is not None:
+	if (not per_slice_colorbar) and im is not None:
+		# Backward-compatible: a single colorbar is still helpful when a global scale
+		# is desired, but note each panel uses its own normalization.
 		fig.subplots_adjust(right=0.9)
 		cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
 		fig.colorbar(im, cax=cbar_ax, label="Density")

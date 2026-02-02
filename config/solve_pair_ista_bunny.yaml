@@ -19,7 +19,7 @@ data:
 solver:
   type: "ista"
   n_iter: 2000
-  lambda_reg: 0.0
+  lambda_reg: 1.0e-5
   lipchitz: 200.0
 
 masking:

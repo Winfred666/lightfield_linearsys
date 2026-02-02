@@ -12,6 +12,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../.."))
 
 from LF_linearsys.io.readers import read_volume, read_image, scale_volume
 from LF_linearsys.io.raw_pairs import find_raw_pairs
+from LF_linearsys.io.preprocess_image_b import denoise_image_b
 import time
 
 
@@ -289,6 +290,13 @@ def preprocess_one_pair(
     img_cropped_cpu = img_cropped.cpu()
     vol_cropped_cpu = vol_cropped  # Already on CPU
 
+    # preprocess_b for better results.
+    # Keep this as a pure denoiser (no shape changes).
+    # try:
+    #     img_cropped_cpu = denoise_image_b(img_cropped_cpu)
+    # except Exception as e:
+    #     # Denoiser should never hard-fail the whole preprocessing pipeline.
+    #     print(f"[warn] denoise_image_b failed for {img_path}: {e}")
     # Normalize dtypes for saving/consumers
     return vol_cropped_cpu.float().contiguous(), img_cropped_cpu.float().contiguous()
 
