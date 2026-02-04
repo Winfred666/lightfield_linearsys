@@ -15,3 +15,5 @@ __pycache__/
 /result
 /src/LF_linearsys.egg-info
 /.pytest_cache
+
+/logs

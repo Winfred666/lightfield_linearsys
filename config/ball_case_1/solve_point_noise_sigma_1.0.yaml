@@ -1,0 +1,24 @@
+data:
+  points_dir: "data/synthetic/balls/case_1_noise/sigma_1.0/points"
+  raw_A_dir: "data/raw/lightsheet_vol_6.9"
+  raw_b_dir: "data/synthetic/balls/case_1_noise/sigma_1.0/measurements"
+  downsampling_rate: 1.0
+  scale_factor: 1.0
+  
+  crop_box_b: [0, 0, 64, 64]
+  crop_box_A: [5, 268, 18, 69, 332, 82]
+  
+  output_dir: "result/solve_point/newton_balls_1/noise_sigma_1.0"
+  batch_pattern: "points_batch_*.pt"
+  threshold_A: null
+  threshold_b: null
+
+solver:
+  type: "newton"
+  lambda_reg: 1.0e-5
+  n_iter: 50
+  positivity: true
+  batch_size: 2000
+
+device: "cuda"
+mesh_iso: [2.0]

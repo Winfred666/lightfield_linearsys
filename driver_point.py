@@ -128,7 +128,7 @@ def process_file(args):
             solver_type = cfg['solver'].get('type', 'fista')
             
             common_params = {
-                'lambda_reg': cfg['solver']['lambda_reg'],
+                'lambda_reg': float(cfg['solver']['lambda_reg']),
                 'n_iter': cfg['solver']['n_iter'],
                 'output_dir': output_dir,
                 'positivity': cfg['solver']['positivity']
@@ -382,7 +382,7 @@ def main():
         visualize_reconstruction_and_reprojection(
             vol=x_global.detach().cpu().float(),
             output_dir=out_dir,
-            threshold_A=float(cfg["data"].get("threshold_A", 0.1) or 0.1),
+            threshold_A=0.1, # current threshold_A in config used for sum up along z.
             data_dir=cfg["data"].get("data_dir"),
             raw_A_dir=cfg["data"].get("raw_A_dir"),
             raw_b_dir=cfg["data"].get("raw_b_dir"),
@@ -390,7 +390,7 @@ def main():
             crop_box_b=cfg["data"].get("crop_box_b"),
             downsampling_rate=float(cfg["data"].get("downsampling_rate", 0.125) or 0.125),
             scale_factor=float(cfg["data"].get("scale_factor", 8.0) or 8.0),
-            stride_pairs=5,
+            stride_pairs=1,
             make_z_scan_video=True,
         )
         logger.info(f"Saved visualizations to {out_dir}")

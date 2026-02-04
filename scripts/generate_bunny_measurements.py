@@ -99,14 +99,14 @@ def numerical_sort_key(p: Path):
         return int(numbers[-1])
     return p.name
 
-def generate_measurements(gt_vol_path, raw_A_dir, output_dir, *, noise_index: int = 0):
+def generate_measurements(gt_vol_path, raw_A_dir, output_dir, *, noise_index: int = -1, crop_box_A=None):
     print(f"Loading GT volume from {gt_vol_path}...")
     gt_vol = torch.load(gt_vol_path, map_location='cpu') # (X, Y, Z)
     print(f"GT Volume shape: {gt_vol.shape}")
     
     raw_A_dir = Path(raw_A_dir)
     output_dir = Path(output_dir)
-    if noise_index is not None:
+    if noise_index >= 0:
         output_dir = output_dir / f"noise_m{int(noise_index):04d}"
     output_dir.mkdir(parents=True, exist_ok=True)
     
@@ -123,6 +123,10 @@ def generate_measurements(gt_vol_path, raw_A_dir, output_dir, *, noise_index: in
         
         A = torch.load(f_path, map_location='cpu') # (X, Y, Z)
         
+        if crop_box_A is not None:
+            x0, y0, z0, x1, y1, z1 = crop_box_A
+            A = A[x0:x1, y0:y1, z0:z1]
+
         if A.shape != gt_vol.shape:
             print(f"Warning: Shape mismatch for {f_path.name}: {A.shape} vs {gt_vol.shape}. Skipping.")
             continue
@@ -135,7 +139,7 @@ def generate_measurements(gt_vol_path, raw_A_dir, output_dir, *, noise_index: in
         b_yx = b_xy.T # (Y, X)
 
         # Apply Matérn GRF noise to one selected measurement (by index in the loop).
-        if int(i) == int(noise_index):
+        if noise_index >= 0 and int(i) == int(noise_index):
             print(f"Applying Matérn GRF noise to measurement i={i} (file idx={idx})...")
             
             H, W = b_yx.shape
@@ -187,12 +191,25 @@ if __name__ == "__main__":
     parser.add_argument(
         "--noise-index",
         type=int,
-        default=0,
+        default=-1,
         help=(
             "Which measurement (0-based index in sorted Interp_Vol_ID_*.pt files) to inject Matérn GRF noise into. "
-            "The output dir will be suffixed with noise_mXXXX."
+            "The output dir will be suffixed with noise_mXXXX if >= 0. Default -1 (no noise)."
         ),
+    )
+    parser.add_argument(
+        "--crop-box-A",
+        type=int,
+        nargs=6,
+        default=None,
+        help="Crop box for A [x1, x2, y1, y2, z1, z2]"
     )
     args = parser.parse_args()
     
-    generate_measurements(args.gt_vol_path, args.raw_A_dir, args.output_dir, noise_index=args.noise_index)
+    generate_measurements(
+        args.gt_vol_path,
+        args.raw_A_dir,
+        args.output_dir,
+        noise_index=args.noise_index,
+        crop_box_A=args.crop_box_A
+    )

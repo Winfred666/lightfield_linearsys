@@ -29,6 +29,15 @@ from typing import Iterable
 import numpy as np
 import torch
 
+# Matplotlib is used throughout this module. Import it once and force a headless
+# backend so these utilities work on servers/SLURM nodes.
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib import cm
+from matplotlib.colors import to_rgba
+
 
 logger = logging.getLogger(__name__)
 
@@ -96,29 +105,35 @@ def project_and_compare(vol: torch.Tensor, A: torch.Tensor, b: torch.Tensor):
 
 
 def visualize_reprojection(b, b_pred, mse, psnr, out_path: Path, pair_name: str):
-	import matplotlib
-
-	matplotlib.use("Agg")
-	import matplotlib.pyplot as plt
-
 	out_path.parent.mkdir(parents=True, exist_ok=True)
-	fig, axes = plt.subplots(1, 3, figsize=(13, 4.2))
+	# Use a GridSpec that reserves narrow columns for colorbars so adding them
+	# does not shrink the main image axes. Layout columns: [img0, img1, cbar1, err, cbar2]
+	fig = plt.figure(figsize=(13, 4.2))
+	# width_ratios: make colorbar columns narrow (0.10) compared to image cols (1.0)
+	gs = fig.add_gridspec(1, 5, width_ratios=[1.0, 1.0, 0.10, 1.0, 0.10], wspace=0.10)
+	ax0 = fig.add_subplot(gs[0, 0])
+	ax1 = fig.add_subplot(gs[0, 1])
+	cax1 = fig.add_subplot(gs[0, 2])
+	ax2 = fig.add_subplot(gs[0, 3])
+	cax2 = fig.add_subplot(gs[0, 4])
 
 	b_np = b.detach().cpu().numpy()
 	pred_np = b_pred.detach().cpu().numpy()
 
-	vmin = min(np.percentile(b_np, 1), np.percentile(pred_np, 1))
-	vmax = max(np.percentile(b_np, 99), np.percentile(pred_np, 99))
+	# Color scale is anchored to GT only, so comparisons are consistent.
+	vmin = float(np.percentile(b_np, 1))
+	vmax = float(np.percentile(b_np, 99))
 	if vmax <= vmin:
 		vmin, vmax = 0, 1
 
-	im0 = axes[0].imshow(b_np, cmap="viridis", vmin=vmin, vmax=vmax)
-	axes[0].set_title(f"GT {pair_name} (b)")
-	plt.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
+	im0 = ax0.imshow(b_np, cmap="viridis", vmin=vmin, vmax=vmax)
+	ax0.set_title(f"GT {pair_name} (b)")
 
-	im1 = axes[1].imshow(pred_np, cmap="viridis", vmin=vmin, vmax=vmax)
-	axes[1].set_title(f"Reprojection (A@x)\nMSE={mse:.2e}, PSNR={psnr:.2f} dB")
-	plt.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
+	im1 = ax1.imshow(pred_np, cmap="viridis", vmin=vmin, vmax=vmax)
+	ax1.set_title("Reprojection (A@x)")
+	# Put colorbar in reserved cax so it doesn't affect image size.
+	cb1 = fig.colorbar(im1, cax=cax1)
+	cb1.ax.tick_params(labelsize=8, pad=2)
 
 	err = pred_np - b_np
 	if err.size > 0:
@@ -131,15 +146,17 @@ def visualize_reprojection(b, b_pred, mse, psnr, out_path: Path, pair_name: str)
 	else:
 		e_max = 1.0
 
-	im2 = axes[2].imshow(err, cmap="coolwarm", vmin=-e_max, vmax=e_max)
-	axes[2].set_title("Error (pred - GT)")
-	plt.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
+	im2 = ax2.imshow(err, cmap="coolwarm", vmin=-e_max, vmax=e_max)
+	ax2.set_title("Residual (Ax - b)")
+	cb2 = fig.colorbar(im2, cax=cax2)
+	cb2.ax.tick_params(labelsize=8, pad=2)
 
-	for ax in axes:
+	for ax in (ax0, ax1, ax2):
 		ax.axis("off")
 
-	plt.suptitle(f"Reprojection Comparison: {pair_name}")
-	plt.tight_layout(rect=[0, 0.0, 1, 0.95])
+	plt.suptitle(f"Reprojection Comparison: {pair_name} | MSE={mse:.2e}, PSNR={psnr:.2f} dB")
+	# Keep a bit of right margin so colorbar tick labels never clip.
+	plt.tight_layout(rect=[0, 0.0, 0.985, 0.95])
 	plt.savefig(out_path)
 	plt.close(fig)
 
@@ -152,11 +169,6 @@ def visualize_slices(
 	per_slice_colorbar: bool = True,
 	robust_percentiles: tuple[float, float] = (1.0, 99.0),
 ):
-	import matplotlib
-
-	matplotlib.use("Agg")
-	import matplotlib.pyplot as plt
-
 	out_path.parent.mkdir(parents=True, exist_ok=True)
 
 	vol = _ensure_cpu_float(vol)
@@ -216,11 +228,6 @@ def visualize_slices(
 
 def visualize_volume_rendering(vol: torch.Tensor, out_path: Path):
 	"""Side view: sum projection along X -> (Y,Z)."""
-	import matplotlib
-
-	matplotlib.use("Agg")
-	import matplotlib.pyplot as plt
-
 	out_path.parent.mkdir(parents=True, exist_ok=True)
 	vol = _ensure_cpu_float(vol)
 	vol_np = vol.numpy()
@@ -292,11 +299,6 @@ def visualize_lightfield_intensity(
 	annotate_every: int = 1,
 ) -> None:
 	"""Plot per-pair lightfield energy (total vs thresholded) with kept % labels."""
-	import matplotlib
-
-	matplotlib.use("Agg")
-	import matplotlib.pyplot as plt
-
 	out_path.parent.mkdir(parents=True, exist_ok=True)
 	if not stats:
 		logger.warning("No lightfield energy stats provided; skipping intensity plot.")
@@ -353,17 +355,12 @@ def visualize_lightfield_side_overlay(
 	out_path: Path,
 	*,
 	fig_size: tuple[float, float],
-	threshold_A: float = 0.1,
-	base_alpha: float = 0.01,
+	threshold_A: float = 0.0,
+	base_alpha: float = 0.2,
 	label_fontsize: int = 6,
+	mode: str = "sum",
+	robust_percentiles: tuple[float, float] = (1.0, 99.0),
 ):
-	import matplotlib
-
-	matplotlib.use("Agg")
-	import matplotlib.pyplot as plt
-	from matplotlib import cm
-	from matplotlib.colors import to_rgba
-
 	out_path.parent.mkdir(parents=True, exist_ok=True)
 	if not projections:
 		logger.warning("No lightfield projections provided; skipping overlay plot.")
@@ -379,6 +376,11 @@ def visualize_lightfield_side_overlay(
 	projections_sorted = sorted(projections, key=_z_key)
 
 	mask_any: np.ndarray | None = None
+	mode = str(mode).strip().lower()
+	if mode not in {"sum", "layers"}:
+		raise ValueError(f"mode must be 'sum' or 'layers', got {mode!r}")
+
+	sum_proj: np.ndarray | None = None
 	for i, item in enumerate(projections_sorted):
 		proj = item["proj"]
 		if proj.size == 0:
@@ -392,29 +394,63 @@ def visualize_lightfield_side_overlay(
 		mask_any |= np.isfinite(proj) & (proj >= float(threshold_A))
 
 		p = proj.astype(np.float32)
-		p_min = float(np.percentile(finite, 1))
-		p_max = float(np.percentile(finite, 99))
-		if p_max <= p_min:
-			p_min = float(np.min(finite))
-			p_max = float(np.max(finite))
-		denom = max(p_max - p_min, 1e-12)
-		p_norm = np.clip((p - p_min) / denom, 0.0, 1.0)
+		if mode == "sum":
+			if sum_proj is None:
+				sum_proj = np.zeros_like(p, dtype=np.float32)
+			# NaN/Inf-safe sum: ignore non-finite values.
+			sum_proj += np.where(np.isfinite(p), p, 0.0).astype(np.float32)
+		else:
+			# --- legacy visualization: per-projection opacity overlay ---
+			p_min = float(np.percentile(finite, 1))
+			p_max = float(np.percentile(finite, 99))
+			if p_max <= p_min:
+				p_min = float(np.min(finite))
+				p_max = float(np.max(finite))
+			denom = max(p_max - p_min, 1e-12)
+			p_norm = np.clip((p - p_min) / denom, 0.0, 1.0)
 
-		rgb = np.asarray(cmap(i))[:3]
-		alpha = (p_norm * base_alpha).astype(np.float32)
+			# rgb = np.asarray(cmap(i))[:3]
+			rgb = np.array([0.0, 0.0, 0.0])  # Black color
+			alpha = (p_norm * base_alpha).astype(np.float32)
 
-		rgba = np.empty((p.shape[0], p.shape[1], 4), dtype=np.float32)
-		rgba[..., 0] = rgb[0]
-		rgba[..., 1] = rgb[1]
-		rgba[..., 2] = rgb[2]
-		rgba[..., 3] = alpha
+			rgba = np.empty((p.shape[0], p.shape[1], 4), dtype=np.float32)
+			rgba[..., 0] = rgb[0]
+			rgba[..., 1] = rgb[1]
+			rgba[..., 2] = rgb[2]
+			rgba[..., 3] = alpha
 
-		ax.imshow(
-			rgba,
+			ax.imshow(
+				rgba,
+				origin="lower",
+				aspect="equal",
+				interpolation="nearest",
+			)
+
+	if mode == "sum" and sum_proj is not None:
+		finite_sum = sum_proj[np.isfinite(sum_proj)]
+		if finite_sum.size == 0:
+			finite_sum = np.asarray([0.0], dtype=np.float32)
+		p_lo, p_hi = robust_percentiles
+		vmin = float(np.percentile(finite_sum, p_lo))
+		vmax = float(np.percentile(finite_sum, p_hi))
+		if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+			vmin = float(np.min(finite_sum))
+			vmax = float(np.max(finite_sum))
+		if vmax <= vmin:
+			vmin, vmax = 0.0, 1.0
+
+		# White -> transparent/low sum, Black -> solid/high sum
+		im = ax.imshow(
+			sum_proj,
 			origin="lower",
 			aspect="equal",
 			interpolation="nearest",
+			cmap="gray_r",
+			vmin=vmin,
+			vmax=vmax,
 		)
+		cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
+		cb.set_label("Sum of projections")
 
 	ax.set_title("Side View of Lightfields (Sum projection along X)\nLeft->Right is Z-axis")
 	ax.set_xlabel("Z (Depth)")
@@ -432,30 +468,33 @@ def visualize_lightfield_side_overlay(
 		except Exception as e:
 			logger.warning(f"Failed to draw threshold mask contour: {e}")
 
-	y_top = projections_sorted[0]["proj"].shape[0] - 1
-	for i, item in enumerate(projections_sorted):
-		z_min = item.get("z_min")
-		z_max = item.get("z_max")
-		if z_min is None or z_max is None:
-			continue
-		z_mid = 0.5 * (float(z_min) + float(z_max))
+	# Per-projection z labels still help diagnose z coverage, even in sum mode.
+	try:
+		y_top = projections_sorted[0]["proj"].shape[0] - 1
+		for i, item in enumerate(projections_sorted):
+			z_min = item.get("z_min")
+			z_max = item.get("z_max")
+			if z_min is None or z_max is None:
+				continue
+			z_mid = 0.5 * (float(z_min) + float(z_max))
 
-		y_step = max(1.0, 0.5 * float(label_fontsize))
-		y = y_top - i * y_step
-		if y < 0:
-			break
-		color = to_rgba(cmap(i), 1.0)
-		ax.text(
-			z_mid,
-			y,
-			item.get("label", f"LF_{i}") + f" [{int(z_min)},{int(z_max)}]",
-			fontsize=label_fontsize,
-			color=color,
-			ha="center",
-			va="top",
-			bbox=dict(facecolor="white", edgecolor="none", alpha=0.35, pad=1.0),
-			clip_on=True,
-		)
+			y_step = max(1.0, 0.5 * float(label_fontsize))
+			y =  (y_top - i * y_step) % y_top
+			
+			color = to_rgba(cmap(i), 1.0)
+			ax.text(
+				z_mid,
+				y,
+				item.get("label", f"LF_{i}") + f" [{int(z_min)},{int(z_max)}]",
+				fontsize=label_fontsize,
+				color=color,
+				ha="center",
+				va="top",
+				bbox=dict(facecolor="white", edgecolor="none", alpha=0.35, pad=1.0),
+				clip_on=True,
+			)
+	except Exception as e:
+		logger.warning(f"Failed to add z-range labels: {e}")
 
 	plt.tight_layout()
 	plt.savefig(out_path)
@@ -474,9 +513,6 @@ def _render_frame_xy(
 	add_colorbar: bool,
 	cbar_ax,
 ):
-	import matplotlib
-
-	matplotlib.use("Agg")
 	import numpy as _np
 
 	ax.clear()
@@ -522,10 +558,6 @@ def _write_video_with_temp_frames(
 		import imageio.v2 as imageio
 		import tempfile
 		import shutil
-		import matplotlib
-
-		matplotlib.use("Agg")
-		import matplotlib.pyplot as plt
 
 		try:
 			with imageio.get_writer(str(out_path), fps=fps, format="FFMPEG") as w:
@@ -562,11 +594,6 @@ def _write_video_with_temp_frames(
 		seq_dir = out_path.with_suffix("")
 		seq_dir.mkdir(parents=True, exist_ok=True)
 		try:
-			import matplotlib
-
-			matplotlib.use("Agg")
-			import matplotlib.pyplot as plt
-
 			for i, fr in enumerate(frames):
 				plt.imsave(seq_dir / f"frame_{i:04d}.png", fr)
 		except Exception:
@@ -575,11 +602,7 @@ def _write_video_with_temp_frames(
 
 
 def visualize_z_scan_video(vol: torch.Tensor, out_path: Path, *, fps: int = 20):
-	import matplotlib
-
-	matplotlib.use("Agg")
 	from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-	import matplotlib.pyplot as plt
 
 	out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -633,7 +656,7 @@ def visualize_reconstruction_and_reprojection(
 	*,
 	vol: torch.Tensor,
 	output_dir: str | Path,
-	threshold_A: float = 0.1,
+	threshold_A: float = 0.0,
 	data_dir: str | Path | None = None,
 	raw_A_dir: str | Path | None = None,
 	raw_b_dir: str | Path | None = None,
@@ -642,7 +665,7 @@ def visualize_reconstruction_and_reprojection(
 	stride_pairs: int = 1,
 	make_z_scan_video: bool = True,
 	z_scan_fps: int = 20,
-	lightfield_overlay_alpha: float = 0.06,
+	lightfield_overlay_alpha: float = 0.2,
 	num_slice_grid: int = 25,
 	crop_box_A: Iterable[int] | None = None,
 	crop_box_b: Iterable[int] | None = None,
@@ -858,20 +881,20 @@ def visualize_reconstruction_and_reprojection(
 		logger.warning(f"Failed to generate lightfield side overlay render: {e}")
 
 	# Lightfield intensity plot
-	try:
-		if lightfield_energy_stats:
-			# Ensure stable ordering by idx when available.
-			stats_sorted = sorted(lightfield_energy_stats, key=lambda d: int(d.get("idx", 0)))
-			visualize_lightfield_intensity(
-				stats_sorted,
-				viz_dir / "lightfield_intensity.png",
-				title=f"Lightfield intensity per pair (threshold_A={threshold_A})",
-				annotate_every=1,
-			)
-		else:
-			logger.warning("No lightfield energy stats collected; skipping intensity plot.")
-	except Exception as e:
-		logger.warning(f"Failed to generate lightfield intensity plot: {e}")
+	# try:
+	# 	if lightfield_energy_stats:
+	# 		# Ensure stable ordering by idx when available.
+	# 		stats_sorted = sorted(lightfield_energy_stats, key=lambda d: int(d.get("idx", 0)))
+	# 		visualize_lightfield_intensity(
+	# 			stats_sorted,
+	# 			viz_dir / "lightfield_intensity.png",
+	# 			title=f"Lightfield intensity per pair (threshold_A={threshold_A})",
+	# 			annotate_every=1,
+	# 		)
+	# 	else:
+	# 		logger.warning("No lightfield energy stats collected; skipping intensity plot.")
+	# except Exception as e:
+	# 	logger.warning(f"Failed to generate lightfield intensity plot: {e}")
 
 	return VisualizationOutputs(
 		viz_dir=viz_dir,

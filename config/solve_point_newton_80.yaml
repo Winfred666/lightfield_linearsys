@@ -17,7 +17,7 @@ data:
 solver:
   type: "newton" # Options: newton, ista
   lambda_reg: 1.0e-5
-  n_iter: 40
+  n_iter: 50
   positivity: true
   batch_size: 2000 # Sub-batch size for solving on GPU
 

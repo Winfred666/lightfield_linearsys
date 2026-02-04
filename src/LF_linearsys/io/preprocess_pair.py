@@ -222,8 +222,6 @@ def preprocess_one_pair(
             # Calculate local z target size for this chunk
             # The chunk covers input range [z_start_in, z_end_in)
             # The output should cover [z_start_in * scale, z_end_target * scale)
-            # But wait, purely scaling a chunk independently requires care with boundary alignment.
-            # The original code just appended results.
             
             vol_chunk_scaled = scale_volume(vol_chunk, scale_factor=effective_vol_scale)
 

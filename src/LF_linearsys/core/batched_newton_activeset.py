@@ -33,6 +33,12 @@ class BatchedRegNewtonASSolver:
         self.output_dir = output_dir
         self.positivity = positivity
 
+        # Optional: spectral health check for the batched system matrix A.
+        # This can be expensive (SVD), so keep it configurable.
+        # Defaults: on (INFO-only) for small problems, but caller can disable.
+        self.log_spectral_health = bool(kwargs.get("log_spectral_health", True))
+        self.spectral_health_eps = float(kwargs.get("spectral_health_eps", 1e-6))
+
         # Logging/history (similar spirit to core/Solver but simplified).
         self.log_interval = int(kwargs.get("log_interval", 5))
         self.history: dict[str, list[float] | list[int]] = {
@@ -57,7 +63,6 @@ class BatchedRegNewtonASSolver:
         AtA = torch.bmm(self.system.At, self.system.A) # (B, N, N)
         
         # Base Hessian H = AtA + lambda * \Gamma, where \Gamma equals to $$\Gamma_{jj} = \frac{1}{\|A_{:j}\|^2 + \epsilon}$$
-        epsilon = 1e-8
         A_norm = self.system.A.norm(dim=1) # (B, N) as our new regularization diagonal element to different row
         # Log statistics of A_norm as sensitivity of each variable.
         a_norm_flat = A_norm.flatten()
@@ -69,15 +74,24 @@ class BatchedRegNewtonASSolver:
             a_norm_flat.max().item(),
         )
         # WARNING: consistant with regularization of object function, do not 
-        # gamma_diag = 1.0 / (A_norm ** 2 + epsilon)
-        gamma_diag = torch.ones_like(A_norm)
-        
+        self.epsilon = 1.0e-10
+        gamma_diag = 1.0 / (A_norm ** 2 + self.epsilon)
+        gamma_ones = torch.ones_like(A_norm)
         # Regularization ensures PD if lambda > 0
         self.H_base = AtA
-        self.H_base.diagonal(dim1=-2, dim2=-1).add_(self.lambda_reg * gamma_diag)
+        self.H_base.diagonal(dim1=-2, dim2=-1).add_(self.epsilon * gamma_diag + self.lambda_reg * gamma_ones)
 
         # Log condition number of base Hessian
-        # self._log_condition_number()
+        # Log spectral health of the forward operator A (batched).
+        if self.log_spectral_health:
+            try:
+                self._log_system_spectral_health(
+                    self.system.A,
+                    lambda_reg=self.lambda_reg,
+                    eps=self.epsilon,
+                )
+            except Exception as e:
+                logger.warning("Failed to compute spectral health metrics: %s", e)
         
     def _compute_loss(self, x):
         """
@@ -105,7 +119,7 @@ class BatchedRegNewtonASSolver:
         x = torch.zeros(self.B, self.N, device=self.device) if x0 is None else x0.to(self.device)
         
         beta = 0.5
-        c = 1e-6
+        c = 1e-6 # select lower c to gain bigger step though achieve smaller desccent. 
         max_ls_iter = 20
         
         for k in range(self.n_iter):
@@ -115,24 +129,25 @@ class BatchedRegNewtonASSolver:
             
             grad_data = self.system.adjoint(residual)
             grad_reg = self.lambda_reg * x
-            grad = grad_data + grad_reg # (B, N)
+            ori_grad = grad_data + grad_reg # (B, N)
             
             # --- 2. Determine Batched Active Set ---
             # Active if x is approx 0 AND gradient is positive (trying to push x negative)
             # Use small epsilon for zero check
-            active_mask = (x <= 1e-7) & (grad > 0)
+            active_mask = (x <= 1e-7) & (ori_grad > 1e-7)
 
             # Fix for singular columns (e.g. where A is 0 for valid Z slices but no signal)
             # If diagonal of H is ~0, the system is singular. Treat these as active (frozen).
             # H_base is (B, N, N)
             h_diag = self.H_base.diagonal(dim1=-2, dim2=-1) # (B, N)
-            null_mask = h_diag.abs() < 1e-8
+            null_mask = h_diag.abs() < self.epsilon
             active_mask = active_mask | null_mask
             
             # --- 3. Build/Modify Batched Hessian ---
             # Start with base Hessian
             H_k = self.H_base.clone() # (B, N, N)
-            
+            grad = ori_grad.clone()
+
             # Modify Hessian if any variables are active
             if active_mask.any():
                 # active_mask is (B, N)
@@ -148,14 +163,14 @@ class BatchedRegNewtonASSolver:
                 # Set diagonal to 1 for active vars: H[b, i, i] = 1
                 # This ensures the linear system is solvable and delta_x[i] becomes 0 (since grad[i]=0)
                 # Here we explicitly set equation 1 * delta_x[i] = 0.
-                H_k.diagonal(dim1=-2, dim2=-1).add_(active_mask.float())
+                H_k.diagonal(dim1=-2, dim2=-1).add_(active_mask.float() * 1e-5) # active_jitter to ease condition number.
                 
                 # --- Modify Gradient ---
                 # For active variables, we want delta_x = 0.
                 # The equation is H_k * delta_x = -grad_mod.
                 # Since row i of H_k is [0...0 1 0...0], we need row i of -grad_mod to be 0
                 # so that 1 * delta_x[i] = 0.
-                grad = grad * (~active_mask).float()
+                grad = ori_grad * (~active_mask).float()
                 
             # --- 4. Solve for Newton Direction ---
             # H_k is symmetric. We can try Cholesky or eigen linear solve.
@@ -183,24 +198,24 @@ class BatchedRegNewtonASSolver:
                 self.history["residual_norm"].append(resid_norm)
             
             # Per-batch step sizes (shape: (B,))
-            alpha_vec = torch.full((self.B,), 0.5, device=self.device)
+            alpha_vec = torch.full((self.B,), 1.0, device=self.device)
             search_mask = torch.ones(self.B, dtype=torch.bool, device=self.device)
             x_next = x.clone()
             
             for ls_i in range(max_ls_iter):
                 x_cand = x + alpha_vec[:, None] * delta_x
-                if self.positivity:
-                    x_cand = torch.clamp(x_cand, min=0.0)
+                
+                # No need to project to non-negative as we already excluded variables in activeset.
+                # if self.positivity:
+                #     x_cand = torch.clamp(x_cand, min=0.0)
                 
                 d_step = x_cand - x
                 f_cand = self._compute_loss(x_cand)
                 # Standard Armijo uses original gradient for descent check on the original function f.
-                # But our step delta_x is computed w.r.t modified subspace.
-                # Let's use the actual function decrease check.
-                dir_deriv = torch.sum(grad * d_step, dim=1) # grad is the modified one? Or original?
+                # Our step delta_x is computed w.r.t modified subspace just to ensure decrease.
+                dir_deriv = torch.sum(ori_grad * d_step, dim=1)
                 
-                # Strict Armijo: f(x+p) <= f(x) + c * p^T * grad_f(x)
-                # grad with holes for active set variable still represent original gradient for those free variable.
+                # Strict Armijo: f(x+p) <= f(x) + c * p^T * grad_f(x), smaller than 1st order approx
                 cond = f_cand <= (f_x + c * dir_deriv)
                 
                 newly_accepted = cond & search_mask # Only consider those still searching
@@ -235,7 +250,7 @@ class BatchedRegNewtonASSolver:
                 n_active = active_mask.float().sum(dim=1).mean().item()
                 logger.info(f"AS-Newton Iter {k}: Loss={mean_loss:.4e}, RelDiff={mean_diff:.2e}, MeanAlpha={mean_alpha:.2e}, AvgActive={n_active:.1f}")
                 
-            if mean_diff < 1e-6:
+            if mean_diff < 1e-11:
                 logger.info(f"Converged at iter {k}")
                 break
                 
@@ -277,24 +292,107 @@ class BatchedRegNewtonASSolver:
         logger.info("Saved AS-Newton convergence plot to %s", save_path)
 
 
-
-    def _log_condition_number(self):
-        """
-        Compute condition number of the base Hessian H = A^T A + lambda*I for each batch.
-        And log the mean, max and min of the condition number in one batch
-        """
-        cond_numbers = []
-        for b in range(self.B):
-            H_b = self.H_base[b].cpu().numpy()
-            eigvals = np.linalg.eigvalsh(H_b)
-            cond_num = eigvals[-1] / eigvals[0]
-            cond_numbers.append(cond_num)
-        cond_numbers = np.array(cond_numbers)
+    def _log_stat(self, name: str, tensor: torch.Tensor) -> None:
+        """Log min/mean/median/max for a 1D-ish tensor (flattened)."""
+        flat = tensor.detach().float().reshape(-1)
+        if flat.numel() == 0:
+            logger.info("[%s] empty", name)
+            return
+        # Guard NaNs/infs for robust logging
+        finite = flat[torch.isfinite(flat)]
+        if finite.numel() == 0:
+            logger.info("[%s] no finite values", name)
+            return
         logger.info(
-            "Hessian condition numbers -- Mean: %.2e, Min: %.2e, Max: %.2e",
-            cond_numbers.mean(),
-            cond_numbers.min(),
-            cond_numbers.max(),
+            "[%s] Min: %.2e | Mean: %.2e | Median: %.2e | Max: %.2e",
+            name,
+            float(finite.min().item()),
+            float(finite.mean().item()),
+            float(finite.median().item()),
+            float(finite.max().item()),
         )
-        return cond_numbers
+
+
+    @torch.no_grad()
+    def _log_system_spectral_health(self, A_batch: torch.Tensor, *, lambda_reg: float = 1e-4, eps: float = 1e-6) -> dict[str, torch.Tensor]:
+        """SVD-based spectral analysis for batched system matrices.
+
+        Args:
+            A_batch: (B, M, N) system matrix.
+            lambda_reg: hypothetical Tikhonov regularization for effective DoF metric.
+            eps: relative threshold (to max singular value) used for numerical rank.
+
+        Returns:
+            Dict with computed tensors (S, kappa, rank, dof, spectral_gap).
+        """
+        if not isinstance(A_batch, torch.Tensor):
+            raise TypeError(f"A_batch must be torch.Tensor, got {type(A_batch)}")
+        if A_batch.ndim != 3:
+            raise ValueError(f"A_batch must have shape (B,M,N), got {tuple(A_batch.shape)}")
+
+        # Compute singular values only (full_matrices=False for speed).
+        # Note: torch.linalg.svd returns singular values in descending order.
+        try:
+            _, S, _ = torch.linalg.svd(A_batch, full_matrices=False)
+        except RuntimeError as e:
+            logger.warning("SVD convergence failed: %s", e)
+            return {}
+
+        # Metric A: condition number kappa = s_max / s_min.
+        max_s = S[:, 0]
+        min_s = S[:, -1]
+        kappa = max_s / (min_s + 1e-12)
+
+        # Metric B: numerical rank (count singular values above eps * max_s).
+        thr = (max_s * float(eps)).unsqueeze(1)
+        numerical_rank = (S > thr).sum(dim=1).float()
+
+        # Metric C: effective DoF under Tikhonov regularization.
+        lam = float(lambda_reg)
+        s_sq = S**2
+        dof = (s_sq / (s_sq + lam)).sum(dim=1)
+
+        # Metric D: spectral gap s1/s2.
+        if S.shape[1] > 1:
+            spectral_gap = S[:, 0] / (S[:, 1] + 1e-12)
+        else:
+            spectral_gap = torch.ones_like(max_s)
+
+        logger.info(
+            "--- System Spectral Health Check (B=%d, M=%d, N=%d) ---",
+            int(A_batch.shape[0]),
+            int(A_batch.shape[1]),
+            int(A_batch.shape[2]),
+        )
+        self._log_stat("Condition No. (kappa)", kappa)
+        self._log_stat("Numerical Rank", numerical_rank)
+        self._log_stat(f"Effective DoF (lambda={lam:.0e})", dof)
+        self._log_stat("Spectral Gap (s1/s2)", spectral_gap)
+
+        # Simple heuristics (no emojis in logs).
+        avg_kappa = float(kappa.mean().item()) if kappa.numel() else float("nan")
+        avg_rank = float(numerical_rank.mean().item()) if numerical_rank.numel() else float("nan")
+        n_cols = int(A_batch.shape[-1])
+        if np.isfinite(avg_kappa):
+            if avg_kappa > 1e6:
+                logger.warning(
+                    "System is ill-conditioned (mean kappa ~ %.1e). Results will be noise-sensitive.",
+                    avg_kappa,
+                )
+            elif avg_kappa > 1e4:
+                logger.info("System is stiff (mean kappa ~ %.1e). Regularization is necessary.", avg_kappa)
+        if np.isfinite(avg_rank) and avg_rank < 0.9 * n_cols:
+            logger.info(
+                "System appears rank deficient (~%.1f/%d). Solution lives in a low-dimensional manifold.",
+                avg_rank,
+                n_cols,
+            )
+
+        return {
+            "S": S,
+            "kappa": kappa,
+            "rank": numerical_rank,
+            "dof": dof,
+            "spectral_gap": spectral_gap,
+        }
 
