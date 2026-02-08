@@ -7,7 +7,7 @@ data:
 
 solver:
   type: "ista" # Options: fista, ista
-  lambda_reg: 1.0e-4
+  lambda_reg: 1.0e-5
   n_iter: 1000
   positivity: true
   batch_size: 5000 # Sub-batch size for solving on GPU
