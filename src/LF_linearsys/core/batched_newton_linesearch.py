@@ -111,7 +111,7 @@ class BatchedRegNewtonLSSolver:
             residual = Ax - self.system.b
             grad_data = self.system.adjoint(residual) # (B, N) 
             
-            grad_reg = self.lambda_reg * torch.matmul(x, self.DtD.T) # x is (B,N), DtD is (N,N). x @ DtD = (DtD x)^T
+            grad_reg = self.lambda_reg * torch.matmul(x, self.DtD) # x is (B,N), DtD is (N,N) and symmetric. x @ DtD = (DtD x)^T
             
             grad = grad_data + grad_reg
             

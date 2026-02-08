@@ -119,7 +119,7 @@ class BatchedRegNewtonASSolver:
         x = torch.zeros(self.B, self.N, device=self.device) if x0 is None else x0.to(self.device)
         
         beta = 0.5
-        c = 1e-6 # select lower c to gain bigger step though achieve smaller desccent. 
+        c = 1e-7 # select lower c to gain bigger step though achieve smaller desccent. 
         max_ls_iter = 20
         
         for k in range(self.n_iter):
@@ -132,9 +132,10 @@ class BatchedRegNewtonASSolver:
             ori_grad = grad_data + grad_reg # (B, N)
             
             # --- 2. Determine Batched Active Set ---
-            # Active if x is approx 0 AND gradient is positive (trying to push x negative)
-            # Use small epsilon for zero check
-            active_mask = (x <= 1e-7) & (ori_grad > 1e-7)
+            # Active if x is approx 0 AND gradient is positive, it do not work as a "First-Order Judgment in a Second-Order Update"
+            # Use small epsilon for zero check, could set to no zero control at all.
+            # active_mask = (x <= 1e-6) & (ori_grad > 1e-5)
+            active_mask = torch.zeros_like(x, dtype=torch.bool)
 
             # Fix for singular columns (e.g. where A is 0 for valid Z slices but no signal)
             # If diagonal of H is ~0, the system is singular. Treat these as active (frozen).
@@ -162,8 +163,8 @@ class BatchedRegNewtonASSolver:
                 
                 # Set diagonal to 1 for active vars: H[b, i, i] = 1
                 # This ensures the linear system is solvable and delta_x[i] becomes 0 (since grad[i]=0)
-                # Here we explicitly set equation 1 * delta_x[i] = 0.
-                H_k.diagonal(dim1=-2, dim2=-1).add_(active_mask.float() * 1e-5) # active_jitter to ease condition number.
+                # Here we explicitly set equation 1 * delta_x[i] = 0, optional active_jitter to ease condition number.
+                H_k.diagonal(dim1=-2, dim2=-1).add_(active_mask.float() * 1.0)
                 
                 # --- Modify Gradient ---
                 # For active variables, we want delta_x = 0.
@@ -201,19 +202,16 @@ class BatchedRegNewtonASSolver:
             alpha_vec = torch.full((self.B,), 1.0, device=self.device)
             search_mask = torch.ones(self.B, dtype=torch.bool, device=self.device)
             x_next = x.clone()
-            
+
             for ls_i in range(max_ls_iter):
                 x_cand = x + alpha_vec[:, None] * delta_x
-                
-                # No need to project to non-negative as we already excluded variables in activeset.
-                # if self.positivity:
-                #     x_cand = torch.clamp(x_cand, min=0.0)
-                
+
+                if self.positivity:
+                    x_cand = torch.clamp(x_cand, min=0.0)
+
                 d_step = x_cand - x
                 f_cand = self._compute_loss(x_cand)
-                # Standard Armijo uses original gradient for descent check on the original function f.
-                # Our step delta_x is computed w.r.t modified subspace just to ensure decrease.
-                dir_deriv = torch.sum(ori_grad * d_step, dim=1)
+                dir_deriv = torch.sum(grad * d_step, dim=1)
                 
                 # Strict Armijo: f(x+p) <= f(x) + c * p^T * grad_f(x), smaller than 1st order approx
                 cond = f_cand <= (f_x + c * dir_deriv)
@@ -222,10 +220,10 @@ class BatchedRegNewtonASSolver:
                 if newly_accepted.any():
                     x_next[newly_accepted] = x_cand[newly_accepted]
                     search_mask[newly_accepted] = False
-                
+
                 if not search_mask.any():
                     break
-                
+
                 alpha_vec[search_mask] *= beta
             
             # For batches that did not find a step: clean freeze (no unverified update)
@@ -249,8 +247,8 @@ class BatchedRegNewtonASSolver:
                 mean_alpha = alpha_vec.mean().item()
                 n_active = active_mask.float().sum(dim=1).mean().item()
                 logger.info(f"AS-Newton Iter {k}: Loss={mean_loss:.4e}, RelDiff={mean_diff:.2e}, MeanAlpha={mean_alpha:.2e}, AvgActive={n_active:.1f}")
-                
-            if mean_diff < 1e-11:
+
+            if mean_diff < self.epsilon:
                 logger.info(f"Converged at iter {k}")
                 break
                 
@@ -291,6 +289,12 @@ class BatchedRegNewtonASSolver:
         plt.close(fig)
         logger.info("Saved AS-Newton convergence plot to %s", save_path)
 
+        # Write residual norm list to .txt file
+        residual_path = sub_dir / f"residual_norm_{tag}.txt"
+        with open(residual_path, "w") as f:
+            for res in self.history["residual_norm"]:
+                f.write(f"{res}\n")
+        logger.info("Saved residual norm list to %s", residual_path)
 
     def _log_stat(self, name: str, tensor: torch.Tensor) -> None:
         """Log min/mean/median/max for a 1D-ish tensor (flattened)."""

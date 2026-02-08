@@ -17,6 +17,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from LF_linearsys.core.point_system import PointLinearSystem
 from LF_linearsys.core.batched_newton_activeset import BatchedRegNewtonASSolver
 from LF_linearsys.core.batched_ista import BatchedISTASolver
+from LF_linearsys.core.batched_svd import BatchedSVDSolver
 from LF_linearsys.utils.volume2mesh import export_volume_to_obj
 from LF_linearsys.io.preprocess_point import preprocess_points_from_raw
 from LF_linearsys.utils.time_recorder import TimeRecorder
@@ -138,6 +139,8 @@ def process_file(args):
                 solver = BatchedRegNewtonASSolver(system, **common_params)
             elif solver_type == 'ista':
                 solver = BatchedISTASolver(system, **common_params)
+            elif solver_type == 'svd':
+                solver = BatchedSVDSolver(system, **common_params)
             else:
                 raise ValueError(f"Unknown solver type: {solver_type}")
             

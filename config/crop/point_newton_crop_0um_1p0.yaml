@@ -1,16 +1,17 @@
 data:
-  points_dir: "data/points/crop_20um/ds1p0"
+  points_dir: "data/points/crop_0um/ds1p0"
   
   # WARNING: when visualizing, still need processed data.
   raw_A_dir: "data/raw/lightsheet_vol_6.9"
-  raw_b_dir: "data/raw/20um_imgs"
+  raw_b_dir: "data/raw/0um_imgs_crop/0.0um_cropped"
   downsampling_rate: 1.0
   scale_factor: 8.0 # ratio of image scales to light-field
   
-  crop_box_b: [1140, 830, 1652, 1342]
+  # Cropping solving range, in the format [x0, y0, x1, y1] for b and [x0, y0, z0, x1, y1, z1] for A
+  crop_box_b: [0, 0, 512, 512]
   crop_box_A: [5, 268, 18, 69, 332, 82]
   
-  output_dir: "result/solve_point/newton_crop_20um_1p0"
+  output_dir: "result/solve_point/newton_crop_0um_1p0"
   batch_pattern: "points_batch_*.pt"
   threshold_A: 0.4
   threshold_b: null

@@ -53,8 +53,14 @@ def main():
     
     vol_np = _load_reconstruction_volume(pt_path)
     
+    # Output statistics before clipping
+    print(f"Volume stats before clipping: min={np.min(vol_np):.6f}, max={np.max(vol_np):.6f}, mean={np.mean(vol_np):.6f}")
+    quartiles = np.percentile(vol_np, [25, 50, 75])
+    print(f"Quartiles: 25%={quartiles[0]:.6f}, 50%={quartiles[1]:.6f}, 75%={quartiles[2]:.6f}")
+    
     # Clip negative noise (optional)
     vol_np = np.clip(vol_np, a_min=0.0, a_max=None)
+
 
     # --- Setup Grid ---
     grid = pv.ImageData()
@@ -140,12 +146,12 @@ def main():
 
     # --- View Buttons ---
     def set_view(view_name):
-        if view_name == "Top": pl.view_xy()
-        elif view_name == "Front": pl.view_zx()
+        if view_name == "Front": pl.view_xy()
+        elif view_name == "Top": pl.view_zx()
         elif view_name == "Right": pl.view_zy()
         elif view_name == "Iso": pl.view_isometric()
 
-    btns = [("Top", "#FF9999"), ("Front", "#99FF99"), ("Right", "#9999FF"), ("Iso", "#DDDDDD")]
+    btns = [("Front", "#FF9999"), ("Top", "#99FF99"), ("Right", "#9999FF"), ("Iso", "#DDDDDD")]
     start_x, start_y = 20, pl.window_size[1] - 50
     for i, (txt, col) in enumerate(btns):
         pl.add_checkbox_button_widget(

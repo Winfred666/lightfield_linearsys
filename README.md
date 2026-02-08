@@ -39,36 +39,26 @@ Place your raw data in `data/raw/`:
 
 We recommend running the solvers directly on raw data. This avoids generating massive intermediate HDF5 files.
 
-**Running ISTA (Pair-based):**
+**Running ISTA (Pair-wise):**
 
-Edit `config/solve_pair_ista_20.yaml` to point to your raw data:
-```yaml
-data:
-  raw_A_dir: "data/raw/lightsheet_vol_6.9"
-  raw_b_dir: "data/raw/20um_imgs"
-  downsampling_rate: 0.125
-  output_dir: "result/solve_pair/ista_onthefly"
-```
+Pair-wise solvers use first-order methods, which have has high regularization and cause very smooth/round results.
+
+Edit `config/pair_ista_crop_20um_0p5.yaml` to your raw data, where `crop` means using `crop_box_b` to crop `.tif` measurement, and `crop_box_A` to crop light field so that A_xy * scaling_rate = measurement_xy.  `0p5` means downsampling rate 0.5:
 
 Run the driver:
 ```bash
-python driver_pair.py --config config/solve_pair_ista_20.yaml
+python driver_pair.py --config config/pair_ista_crop_20um_0p5.yaml
 ```
 
-**Running Newton (Point-based):**
+**Running Newton (Point-wise):**
 
-Edit `config/solve_point_newton_20.yaml`:
-```yaml
-data:
-  raw_A_dir: "data/raw/lightsheet_vol_6.9"
-  raw_b_dir: "data/raw/20um_imgs"
-  downsampling_rate: 0.5
-  output_dir: "result/solve_point/newton_onthefly"
-```
+Point-wise solver use second-order methods, which are much faster, more accurate, and sharper, with dynamic regularization.
+
+Edit `config/crop/point_newton_crop_20um_1p0.yaml`:
 
 Run the driver:
 ```bash
-python driver_point.py --config config/solve_point_newton_20.yaml
+python driver_point.py --config config/crop/point_newton_crop_20um_1p0.yaml
 ```
 
 ### 4. Visualization

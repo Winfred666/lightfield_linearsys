@@ -13,13 +13,13 @@ data:
 
   joint_pair_num: 15
   max_pairs: null
-  threshold_A: 0.0001
+  threshold_A: 0.4
   threshold_b: null
 
 solver:
   type: "ista"
   n_iter: 2000
-  lambda_reg: 1.0e-5
+  lambda_reg: 1.0e-4
   lipchitz: 200.0
 
 masking:

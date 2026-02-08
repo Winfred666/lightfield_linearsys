@@ -25,8 +25,8 @@ class PointLinearSystem:
 
         if threshold_A is not None:
             # A is (B, M, N). Sum over M (dim 1)
-            col_max = torch.max(torch.abs(self.A), dim=1).values
-            mask = col_max > threshold_A
+            col_sum = torch.sum(torch.abs(self.A), dim=1) # (B, N)
+            mask = col_sum > threshold_A
             # Apply column mask to A (zero out invalid columns)
             self.A = self.A * mask.unsqueeze(1).to(self.A.dtype)
 

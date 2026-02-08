@@ -15,13 +15,13 @@ data:
 
   output_dir: "result/solve_point/ista_bunny"
   batch_pattern: "points_batch_*.pt"
-  threshold_A: 0.0001
+  threshold_A: 0.4
   threshold_b: null
 
 solver:
   type: "ista"
   lipchitz: 200.0
-  lambda_reg: 1.0e-5
+  lambda_reg: 1.0e-4
   n_iter: 2000
   positivity: true
   batch_size: 2000
