@@ -121,8 +121,8 @@ def visualize_reprojection(b, b_pred, mse, psnr, out_path: Path, pair_name: str)
 	pred_np = b_pred.detach().cpu().numpy()
 
 	# Color scale is anchored to GT only, so comparisons are consistent.
-	vmin = float(np.percentile(b_np, 1))
-	vmax = float(np.percentile(b_np, 99))
+	vmin = float(np.percentile(b_np, 0))
+	vmax = float(np.percentile(b_np, 100))
 	if vmax <= vmin:
 		vmin, vmax = 0, 1
 
@@ -139,7 +139,7 @@ def visualize_reprojection(b, b_pred, mse, psnr, out_path: Path, pair_name: str)
 	if err.size > 0:
 		e = err[np.isfinite(err)]
 		if e.size > 0:
-			e_max = float(np.percentile(np.abs(e), 99))
+			e_max = float(np.percentile(np.abs(e), 100))
 			e_max = max(e_max, 1e-12)
 		else:
 			e_max = 1.0
@@ -167,7 +167,7 @@ def visualize_slices(
 	*,
 	num_slices: int = 25,
 	per_slice_colorbar: bool = True,
-	robust_percentiles: tuple[float, float] = (1.0, 99.0),
+	robust_percentiles: tuple[float, float] = (0.0, 100.0),
 ):
 	out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -239,8 +239,8 @@ def visualize_volume_rendering(vol: torch.Tensor, out_path: Path):
 	fig, ax = plt.subplots(figsize=(w_in, h_in))
 
 	if proj.size > 0:
-		vmin = float(np.percentile(proj, 1))
-		vmax = float(np.percentile(proj, 99))
+		vmin = float(np.percentile(proj, 0))
+		vmax = float(np.percentile(proj, 100))
 		if vmax <= vmin:
 			vmin, vmax = float(np.min(proj)), float(np.max(proj))
 	else:
@@ -359,7 +359,7 @@ def visualize_lightfield_side_overlay(
 	base_alpha: float = 0.2,
 	label_fontsize: int = 6,
 	mode: str = "sum",
-	robust_percentiles: tuple[float, float] = (1.0, 99.0),
+	robust_percentiles: tuple[float, float] = (0.0, 100.0),
 ):
 	out_path.parent.mkdir(parents=True, exist_ok=True)
 	if not projections:
@@ -401,8 +401,8 @@ def visualize_lightfield_side_overlay(
 			sum_proj += np.where(np.isfinite(p), p, 0.0).astype(np.float32)
 		else:
 			# --- legacy visualization: per-projection opacity overlay ---
-			p_min = float(np.percentile(finite, 1))
-			p_max = float(np.percentile(finite, 99))
+			p_min = float(np.percentile(finite, 0))
+			p_max = float(np.percentile(finite, 100))
 			if p_max <= p_min:
 				p_min = float(np.min(finite))
 				p_max = float(np.max(finite))

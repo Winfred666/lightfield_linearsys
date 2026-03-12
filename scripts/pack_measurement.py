@@ -22,8 +22,8 @@ def pack_measurement(input_dir, output_name="measurement_packup.pt", crop_box=No
     """
     
     # 1. Find images matching the pattern
-    # Pattern: 1scan (*).tif
-    pattern = os.path.join(input_dir, "1scan (*).tif")
+    # Pattern: 1scan (*).tif or .tiff
+    pattern = os.path.join(input_dir, "1scan (*).tif*")
     files = glob.glob(pattern)
     
     if not files:
@@ -79,7 +79,7 @@ def pack_measurement(input_dir, output_name="measurement_packup.pt", crop_box=No
             chunk = arr[x0:x1, y0:y1]
             
             # Normalize signal
-            chunk = chunk.astype(np.float32) / float(voxels_per_image)
+            # chunk = chunk.astype(np.float32) / float(voxels_per_image)
             
             # Determine Z placement
             # "Image index and Z is reversed"

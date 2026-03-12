@@ -29,7 +29,7 @@ Search data/run*.sh to see whether there are `driver_point.py` calling, if so, u
 	* `data.crop_box_A`: crop for the 3D volume in `[x0, y0, z0, x1, y1, z1]`
 	* `solver.type`: solver backend (for example `newton`, `ista`, etc.)
 
-If the YAML already exist and from the history you know that there is change in raw_b_dir after last run, delete `points_dir` before running.
+If the YAML already exist and from the history you know that there is change in raw_b_dir after last run, or you have an uncomplish points batch, delete `points_dir` before running `driver_point.py` again. This ensures that the newly generated points batch will be consistent and complete (e.g., as many files as a reference case).
 
 2. **Decide which machine/GPU(s) to run on**, see skill `use_gpu_node`
 

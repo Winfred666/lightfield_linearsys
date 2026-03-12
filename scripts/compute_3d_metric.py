@@ -82,8 +82,8 @@ def visualize_comparison_video(recon, gt, out_path, fps=10):
     # Subsample for speed if volume is huge
     subsample = recon_np[::2, ::2, ::2] 
     if subsample.size > 0:
-        vmin = float(np.percentile(subsample, 1))
-        vmax = float(np.percentile(subsample, 99))
+        vmin = float(np.percentile(subsample, 0))
+        vmax = float(np.percentile(subsample, 100))
         if vmax <= vmin:
             vmin, vmax = float(np.min(subsample)), float(np.max(subsample))
     else:

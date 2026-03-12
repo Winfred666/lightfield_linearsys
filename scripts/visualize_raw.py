@@ -11,12 +11,16 @@ import logging
 from datetime import datetime
 import argparse
 
-# thresholds = [1.0, 0.9, 0.7, 0.6, 0.4, 0.2, 0.1, 1e-2]
+# thresholds = [10.0, 8.0, 6.0, 4.0, 2.0, 1.0, 0.9, 0.8, 0.7]
 thresholds = [10.0, 8.0, 6.0, 4.0, 2.0, 1.0, 0.9, 0.8, 0.7]
 
 
 def setup_logging(output_dir):
     log_path = output_dir / "analysis.log"
+    # Reset logging handlers to avoid mixing logs from different runs if called in same session
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+        
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
@@ -213,7 +217,7 @@ def annotate_histogram_counts(
         label_count += 1
 
 def visualize(
-    file_path,
+    file_paths,
     args=None, # Pass full args object for flexibility
     norm_mode="percentile",
     video_downsample: int = 1,
@@ -223,187 +227,246 @@ def visualize(
 ):
     global thresholds
     # Setup Output Directory
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(f"result/visualize_test/{timestamp}")
+    if hasattr(args, 'output_dir') and args.output_dir:
+        output_dir = Path(args.output_dir)
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = Path(f"result/visualize_test/{timestamp}")
+    
     output_dir.mkdir(parents=True, exist_ok=True)
     
     logger = setup_logging(output_dir)
-    logger.info(f"Starting visualization for {file_path}")
+    if isinstance(file_paths, (str, Path)):
+        file_paths = [file_paths]
+        
+    logger.info(f"Starting visualization for {len(file_paths)} files")
     logger.info(f"Output directory: {output_dir}")
 
-    # Load Data
-    try:
-        logger.info("Loading data... (this might take a while for large files)")
-        
-        # Check if raw mode arguments are provided
-        raw_mode = False
-        if hasattr(args, 'input_dir') and args.input_dir and hasattr(args, 'img_dir') and args.img_dir:
-            raw_mode = True
-            
-        if raw_mode:
-             from LF_linearsys.io.preprocess_pair import preprocess_one_pair
-             from LF_linearsys.io.raw_pairs import find_raw_pairs
-             
-             pairs = find_raw_pairs(args.input_dir, args.img_dir)
-             target_pair = None
-             
-             # Try to match the specific file requested, or default to the first one
-             target_idx = 1
-             if args.file_path and "pair_" in args.file_path:
-                 # Try to extract index from filename like pair_2.h5 or similar
-                 import re
-                 match = re.search(r'(\d+)', Path(args.file_path).name)
-                 if match:
-                     target_idx = int(match.group(1))
-            
-             # Find the matching pair
-             for p in pairs:
-                 if p.idx == target_idx:
-                     target_pair = p
-                     break
-             
-             if not target_pair and pairs:
-                 logger.warning(f"Pair index {target_idx} not found, defaulting to first available pair {pairs[0].idx}")
-                 target_pair = pairs[0]
-                 
-             if not target_pair:
-                 logger.error("No valid raw pairs found.")
-                 return
+    y_limit = getattr(args, 'y_limit', 1000)
+    x_min = getattr(args, 'x_min', None)
+    x_max = getattr(args, 'x_max', None)
+    
+    all_data = []
 
-             logger.info(f"Processing Raw Pair Index {target_pair.idx} from {target_pair.vol_path} and {target_pair.img_path}")
-             
-             vol, img = preprocess_one_pair(
-                 vol_path=target_pair.vol_path,
-                 img_path=target_pair.img_path,
-                 downsampling_rate=args.downsampling_rate,
-                 scale_factor=args.scale_factor,
-                 device=torch.device("cpu") # Visualize on CPU
-             )
-        else:
-            # Legacy/Direct file mode
-            file_path_obj = Path(file_path)
-            if file_path_obj.suffix == '.h5':
-                with h5py.File(file_path_obj, 'r') as f:
-                    logger.info("Reading HDF5 datasets 'A' and 'b'...")
-                    # Read into memory
-                    vol = torch.from_numpy(f['A'][:])
-                    img = torch.from_numpy(f['b'][:])
-            else:
-                data = torch.load(file_path, map_location='cpu')
-                
-                if isinstance(data, dict):
-                    vol = data.get('A')
-                    img = data.get('b')
-                else:
-                    # Fallback if structure is different
-                    vol = data[0]
-                    img = data[1]
+    # Load Data
+    for file_path in file_paths:
+        try:
+            logger.info(f"Loading data from {file_path}...")
             
-        logger.info(f"Volume Shape: {vol.shape}, Type: {vol.dtype}")
-        logger.info(f"Image Shape: {img.shape}, Type: {img.dtype}")
-        
-    except Exception as e:
-        logger.error(f"Failed to load file or process raw data: {e}", exc_info=True)
+            # Check if raw mode arguments are provided
+            raw_mode = False
+            if (hasattr(args, 'input_dir') and args.input_dir and args.input_dir.lower() != "none" and 
+                hasattr(args, 'img_dir') and args.img_dir and args.img_dir.lower() != "none"):
+                raw_mode = True
+                
+            if raw_mode:
+                 from LF_linearsys.io.preprocess_pair import preprocess_one_pair
+                 from LF_linearsys.io.raw_pairs import find_raw_pairs
+                 
+                 pairs = find_raw_pairs(args.input_dir, args.img_dir)
+                 target_pair = None
+                 
+                 # Try to match the specific file requested, or default to the first one
+                 target_idx = 1
+                 if file_path and "pair_" in str(file_path):
+                     # Try to extract index from filename like pair_2.h5 or similar
+                     import re
+                     match = re.search(r'(\d+)', Path(file_path).name)
+                     if match:
+                         target_idx = int(match.group(1))
+                
+                 # Find the matching pair
+                 for p in pairs:
+                     if p.idx == target_idx:
+                         target_pair = p
+                         break
+                 
+                 if not target_pair and pairs:
+                     logger.warning(f"Pair index {target_idx} not found, defaulting to first available pair {pairs[0].idx}")
+                     target_pair = pairs[0]
+                     
+                 if not target_pair:
+                     logger.error("No valid raw pairs found.")
+                     continue
+
+                 logger.info(f"Processing Raw Pair Index {target_pair.idx} from {target_pair.vol_path} and {target_pair.img_path}")
+                 
+                 vol, img = preprocess_one_pair(
+                     vol_path=target_pair.vol_path,
+                     img_path=target_pair.img_path,
+                     downsampling_rate=args.downsampling_rate,
+                     scale_factor=args.scale_factor,
+                     device=torch.device("cpu") # Visualize on CPU
+                 )
+            else:
+                # Legacy/Direct file mode
+                file_path_obj = Path(file_path)
+                if file_path_obj.suffix == '.h5':
+                    with h5py.File(file_path_obj, 'r') as f:
+                        logger.info("Reading HDF5 datasets 'A' and 'b'...")
+                        # Read into memory
+                        vol = torch.from_numpy(f['A'][:])
+                        img = torch.from_numpy(f['b'][:])
+                else:
+                    data = torch.load(file_path, map_location='cpu')
+                    
+                    if isinstance(data, dict):
+                        # Try reconstruction or A for volume
+                        vol = data.get('reconstruction')
+                        if vol is None:
+                            vol = data.get('A')
+                        
+                        # Try b for image
+                        img = data.get('b')
+                        
+                        # If we only have volume, create dummy image
+                        if vol is not None and img is None:
+                            img = torch.zeros((1, 1))
+                        # If we only have image, create dummy volume
+                        elif img is not None and vol is None:
+                            vol = torch.zeros((1, 1, 1))
+                        # If we have neither as a dict, maybe it's the tensor itself?
+                        elif vol is None and img is None:
+                            # Fallback: assume the dict might contain the tensor under another key or just use the data if it was a tensor
+                            vol = data
+                            img = torch.zeros((1, 1))
+                    elif isinstance(data, torch.Tensor):
+                        vol = data
+                        img = torch.zeros((1, 1))
+                    else:
+                        # Fallback if structure is different
+                        try:
+                            vol = data[0]
+                            img = data[1]
+                        except:
+                            vol = data
+                            img = torch.zeros((1, 1))
+                
+                # Final safety check
+                if vol is None: vol = torch.zeros((1,1,1))
+                if img is None: img = torch.zeros((1,1))
+                
+            logger.info(f"Volume Shape: {vol.shape}, Type: {vol.dtype}")
+            logger.info(f"Image Shape: {img.shape}, Type: {img.dtype}")
+            
+            all_data.append({
+                'vol': vol,
+                'img': img,
+                'label': Path(file_path).name
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to load file or process raw data: {e}", exc_info=True)
+            continue
+
+    if not all_data:
+        logger.error("No data loaded. Exiting.")
         return
 
-    # Convert to numpy for plotting (subsample volume for histograms to save memory/time)
-    logger.info("Converting to numpy...")
-    
-    # Optional: Clip image values to [0, 1] as requested
-    # img = torch.clamp(img, 0.0, 1.0)
-    
-    img_np = img.numpy()
-
-    # Log basic stats for volume before any visualization normalization.
-    # Use a subsample for speed/memory (volume can be huge).
-    vol_np = vol.numpy()
-    vol_np_sample = vol_np[::4, ::4, ::4]
-    vol_flat = np.asarray(vol_np_sample).ravel()
-    if vol_flat.size == 0:
-        logger.warning("Volume is empty; cannot compute stats.")
-    else:
-        vol_min = float(np.min(vol_flat))
-        vol_max = float(np.max(vol_flat))
-        vol_mean = float(np.mean(vol_flat))
-        vol_median = float(np.median(vol_flat))
-        logger.info(
-            "Volume stats (A) [subsample x4]: min=%.8g max=%.8g median=%.8g mean=%.8g",
-            vol_min,
-            vol_max,
-            vol_median,
-            vol_mean,
-        )
-
-    # Log basic stats for target image before normalization
-    img_np_flat = np.asarray(img_np).ravel()
-    if img_np_flat.size == 0:
-        logger.warning("Target image is empty; cannot compute stats.")
-        img_min, img_max, img_median, img_mean = 0, 0, 0, 0
-    else:
-        img_min = float(np.min(img_np_flat))
-        img_max = float(np.max(img_np_flat))
-        img_mean = float(np.mean(img_np_flat))
-        img_median = float(np.median(img_np_flat))  # median of values
-        logger.info(
-            "Target image stats (pre-norm): min=%.8g max=%.8g median=%.8g mean=%.8g",
-            img_min, img_max, img_median, img_mean
-        )
-    
     # --- 1. Histograms ---
     logger.info("Generating Histograms...")
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
     
-    if hist_log_bins:
-        img_flat = np.asarray(img_np).ravel()
-        edges = log_hist_edges_from_data(img_flat, decades=hist_decades, include_zero=True)
-        img_hist = abs_values(img_flat)
-        axes[0].hist(img_hist, bins=edges, color='blue', alpha=0.7)
-        axes[0].set_xscale('log')
-        axes[0].set_title(f"Target Image (b) Histogram (log bins, |x|)\nmin={img_min:.2g}, max={img_max:.2g}, mean={img_mean:.2g}, median={img_median:.2g}")
-        axes[0].set_xlabel("|Intensity| (raw magnitude)")
-        axes[0].set_ylabel("Count")
-        # start at the first positive edge; zeros are still counted in the [0, edge1] bin
-        if edges.size >= 3:
-            axes[0].set_xlim(edges[1], edges[-1])
-        annotate_histogram_counts(axes[0], min_count=1)
-    else:
-        # Linear histogram
-        axes[0].hist(img_np.ravel(), bins=100, color='blue', alpha=0.7)
-        axes[0].set_title(f"Target Image (b) Histogram\nmin={img_min:.2g}, max={img_max:.2g}, mean={img_mean:.2g}, median={img_median:.2g}")
-        axes[0].set_xlabel("Intensity")
-        axes[0].set_ylabel("Count")
-    annotate_histogram_counts(axes[0], min_count=1)
+    colors = ['blue', 'green', 'red', 'orange', 'purple', 'cyan', 'magenta', 'yellow']
     
-    # Volume Histogram (Subsampled)
-    vol_sample_np = vol_np_sample  # Stride 4 in each dim -> 1/64th size
+    for i, data in enumerate(all_data):
+        vol = data['vol']
+        img = data['img']
+        label = data['label']
+        color = colors[i % len(colors)]
+        
+        # Convert to numpy
+        img_np = img.numpy()
+        vol_np = vol.numpy()
+        
+        # Log stats
+        vol_flat = vol_np.ravel()
+        if vol_flat.size > 0:
+            vol_min = float(np.min(vol_flat))
+            vol_max = float(np.max(vol_flat))
+            vol_mean = float(np.mean(vol_flat))
+            vol_median = float(np.median(vol_flat))
+            logger.info(
+                "[%s] Volume stats (A) [no subsample]: min=%.8g max=%.8g median=%.8g mean=%.8g",
+                label, vol_min, vol_max, vol_median, vol_mean,
+            )
+
+        img_flat = img_np.ravel()
+        if img_flat.size > 0:
+            img_min = float(np.min(img_flat))
+            img_max = float(np.max(img_flat))
+            img_mean = float(np.mean(img_flat))
+            img_median = float(np.median(img_flat))
+            logger.info(
+                "[%s] Image stats (pre-norm): min=%.8g max=%.8g median=%.8g mean=%.8g",
+                label, img_min, img_max, img_median, img_mean
+            )
+
+        # Image Histogram
+        if hist_log_bins:
+            edges = log_hist_edges_from_data(img_flat, decades=hist_decades, include_zero=True)
+            img_hist_vals = abs_values(img_flat)
+            axes[0].hist(img_hist_vals, bins=edges, color=color, alpha=0.5, label=label)
+            axes[0].set_xscale('log')
+            if i == 0:
+                axes[0].set_xlabel("|Intensity| (raw magnitude)")
+                axes[0].set_ylabel("Count")
+            if edges.size >= 3:
+                axes[0].set_xlim(min(axes[0].get_xlim()[0], edges[1]), max(axes[0].get_xlim()[1], edges[-1]))
+        else:
+            # Linear histogram. 
+            # If x_min and x_max are provided, we should probably use them for binning too to avoid wasting bins.
+            hist_range = (x_min, x_max) if (x_min is not None and x_max is not None) else None
+            axes[0].hist(img_flat, bins=100, range=hist_range, color=color, alpha=0.5, label=label)
+            if i == 0:
+                axes[0].set_xlabel("Intensity")
+                axes[0].set_ylabel("Count")
+        
+        # Volume Histogram
+        if hist_log_bins:
+            edges = log_hist_edges_from_data(vol_flat, decades=hist_decades, include_zero=True)
+            vol_hist_vals = abs_values(vol_flat)
+            axes[1].hist(vol_hist_vals, bins=edges, color=color, alpha=0.5, label=label)
+            axes[1].set_xscale('log')
+            if i == 0:
+                axes[1].set_xlabel("|Intensity| (raw magnitude)")
+                axes[1].set_ylabel("Count")
+            if edges.size >= 3:
+                axes[1].set_xlim(min(axes[1].get_xlim()[0], edges[1]), max(axes[1].get_xlim()[1], edges[-1]))
+        else:
+            hist_range = (x_min, x_max) if (x_min is not None and x_max is not None) else None
+            axes[1].hist(vol_flat, bins=100, range=hist_range, color=color, alpha=0.5, label=label)
+            if i == 0:
+                axes[1].set_xlabel("Intensity")
+                axes[1].set_ylabel("Count")
+
+    axes[0].set_title("Target Image (b) Histograms")
+    axes[0].legend()
+    axes[1].set_title("Volume (A) Histograms")
+    axes[1].legend()
     
-    if hist_log_bins:
-        # Use true data range bins so magnitudes are meaningful.
-        edges = log_hist_edges_from_data(vol_sample_np.ravel(), decades=hist_decades, include_zero=True)
-        vol_hist = abs_values(vol_sample_np.ravel())
-        axes[1].hist(vol_hist, bins=edges, color='green', alpha=0.7)
-        axes[1].set_xscale('log')
-        axes[1].set_title(f"Volume (A) Histogram (Subsampled, log bins from data, |x|)")
-        axes[1].set_xlabel("|Intensity| (raw magnitude)")
-        axes[1].set_ylabel("Count")
-        if edges.size >= 3:
-            axes[1].set_xlim(edges[1], edges[-1])
-        annotate_histogram_counts(axes[1], min_count=1)
-    else:
-        axes[1].hist(vol_sample_np.ravel(), bins=100, color='green', alpha=0.7)
-        axes[1].set_title("Volume (A) Histogram (Subsampled)")
-        axes[1].set_xlabel("Intensity")
-        axes[1].set_ylabel("Count")
-        annotate_histogram_counts(axes[1], min_count=1)
+    if y_limit:
+        axes[0].set_ylim(0, y_limit)
+        axes[1].set_ylim(0, y_limit)
+    
+    if x_min is not None and x_max is not None:
+        axes[0].set_xlim(x_min, x_max)
+        axes[1].set_xlim(x_min, x_max)
     
     plt.tight_layout()
     plt.savefig(output_dir / "histograms.png")
     plt.close()
-    logger.info("Saved histograms.png")
+    logger.info(f"Saved histograms.png (y-axis limit: {y_limit}, x-axis range: [{x_min}, {x_max}])")
 
-    # --- 2. Threshold previews (absolute thresholds; hard-coded list) ---
-    logger.info("Generating threshold previews (absolute thresholds; hard-coded list)...")
+    # --- For the rest of visualizations, use the first file only ---
+    first_data = all_data[0]
+    vol = first_data['vol']
+    img = first_data['img']
+    vol_np = vol.numpy()
+    img_np = img.numpy()
     
+    # --- 2. Threshold previews (absolute thresholds; hard-coded list) ---
+    logger.info("Generating threshold previews for the first file...")
     threshold_output_dir = output_dir / "target_image_threshold_previews"
     threshold_output_dir.mkdir(exist_ok=True)
 
@@ -412,154 +475,76 @@ def visualize(
     elif norm_mode == "percentile":
         im_norm = normalize_img_percentile(img_np, p_low=1.0, p_high=99.0)
     else:
-        logger.warning(f"Unknown norm_mode={norm_mode!r}, falling back to percentile")
         im_norm = normalize_img_percentile(img_np, p_low=1.0, p_high=99.0)
 
-    # Compute masks from the raw (pre-normalization) image so thresholds are in absolute units.
     img_raw = np.asarray(img_np)
-    img_flat = img_raw.ravel()
-
-    if img_flat.size == 0:
-        logger.warning("Target image is empty; skipping threshold previews.")
-    else:
-        img_min_raw = float(np.min(img_flat))
-        img_max_raw = float(np.max(img_flat))
-        logger.info("Target image absolute range: min=%.8g max=%.8g", img_min_raw, img_max_raw)
-
+    if img_raw.size > 0:
         for thr in thresholds:
             threshold = float(thr)
             mask = img_raw > threshold
             actual_keep = float(mask.mean())
-
             fig, ax = plt.subplots(figsize=(8, 8))
             rgb = overlay_nonzero_red(im_norm, mask)
             ax.imshow(rgb)
-            ax.set_title(
-                "Target Image (b)\n"
-                f"threshold > {threshold:.5e} | keep={actual_keep:.4%}"
-            )
+            ax.set_title(f"Target Image (b)\nthreshold > {threshold:.5e} | keep={actual_keep:.4%}")
             ax.axis('off')
-
-            out_name = f"target_thr_{threshold:.04f}.png".replace("+", "")
+            out_name = f"target_thr_{threshold:.04f}.png"
             plt.savefig(threshold_output_dir / out_name)
             plt.close(fig)
 
-    logger.info(f"Saved thresholded images to {threshold_output_dir}")
-
-    # --- 3. Volume Slices ---
-    logger.info("Generating Volume Slices...")
-    # vol shape is (X, Y, Z). We usually slice along Z (depth) or Y?
-    # Context says Z is depth (index 2).
-    # Let's plot grid of Z slices.
-    
+    # --- 3. Volume Slices (for first file) ---
+    logger.info("Generating Volume Slices for the first file...")
     nz = vol.shape[2]
-
-    # Show more slices for better spatial context.
-    # Keep it bounded so the figure doesn't become unreasonably large.
-    # NOTE: 64 slices often isn't enough to see structure in large Z volumes.
     num_slices = int(min(100, int(nz)))
     indices = np.linspace(0, nz - 1, num_slices, dtype=int)
-
-    # Uniform legend: use a single (vmin, vmax) for ALL slices.
-    # Using global min/max is very sensitive to outliers; a robust global range
-    # usually produces more readable plots while remaining consistent.
-    global_vmin, global_vmax = robust_range_from_data(vol_np_sample, p_low=1.0, p_high=99.0)
-    logger.info(
-        "Volume slice colormap range (global, robust): vmin=%.6g vmax=%.6g",
-        global_vmin,
-        global_vmax,
-    )
-
+    global_vmin, global_vmax = robust_range_from_data(vol_np, p_low=1.0, p_high=99.0)
+    
     ncols = int(np.ceil(np.sqrt(num_slices)))
     nrows = int(np.ceil(num_slices / ncols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 5 * nrows))
     axes = np.asarray(axes).ravel()
-
     shared_im = None
-    
     for i, idx in enumerate(indices):
-        # Slice: vol[:, :, idx] -> (X, Y).
-        # imshow expects (H, W) -> (Y, X). So transpose.
         slice_data = vol[:, :, idx].numpy().T
         im = axes[i].imshow(slice_data, cmap='viridis', vmin=global_vmin, vmax=global_vmax)
         axes[i].set_title(f"Z-Slice {idx}")
-        # Keep axes visible for alignment debugging
-        axes[i].set_xlabel("X")
-        axes[i].set_ylabel("Y")
-
-        if shared_im is None:
-            shared_im = im
-
-    # Hide any extra axes if grid > num_slices
-    for j in range(len(indices), len(axes)):
-        axes[j].axis('off')
-
-    # Single shared colorbar/legend for all slices (match visualize_density_slices.py style).
+        axes[i].axis('off')
+        if shared_im is None: shared_im = im
+    for j in range(len(indices), len(axes)): axes[j].axis('off')
     if shared_im is not None:
         fig.subplots_adjust(right=0.9)
         cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
         fig.colorbar(shared_im, cax=cbar_ax, label='Intensity')
-
     plt.savefig(output_dir / "volume_slices.png", bbox_inches='tight')
     plt.close()
-    logger.info("Saved volume_slices.png")
 
     # --- 4. Video (Z-Scan) ---
-    logger.info("Generating Volume Video (Z-scan)...")
-    
-    # Reduce resolution for video generation speed/size if needed
-    # Volume might be huge (e.g. 1192x2048). 
-    # Let's resize or just plot directly. Plotting 2Kx1K frames is slow.
-    # Let's simple slice without resizing first, see performance.
-    
-    fig_vid, ax_vid = plt.subplots(figsize=(8, 8))
-
-    # Pick frames: always scan the whole volume with a fixed stride.
+    logger.info("Generating Volume Video (Z-scan) for the first file...")
     stride = 8
     frames = list(range(0, nz, stride))
-
-    if not frames:
-        logger.warning("No frames selected for video; skipping video export.")
+    if frames:
+        fig_vid, ax_vid = plt.subplots(figsize=(8, 8))
+        vid_vmin, vid_vmax = robust_range_from_data(vol_np, p_low=1.0, p_high=99.0)
+        first_slice = vol[:, :, frames[0]].numpy().T
+        first_slice = _downsample_2d(first_slice, video_downsample)
+        im_display = ax_vid.imshow(first_slice, cmap='viridis', animated=True, vmin=vid_vmin, vmax=vid_vmax)
+        ax_vid.axis('off')
+        fig_vid.colorbar(im_display, ax=ax_vid, fraction=0.046, pad=0.04, label='Intensity')
+        def update(frame):
+            slice_data = vol[:, :, frame].numpy().T
+            slice_data = _downsample_2d(slice_data, video_downsample)
+            im_display.set_data(slice_data)
+            ax_vid.set_title(f"Z-Slice {frame}")
+            return [im_display]
+        ani = FuncAnimation(fig_vid, update, frames=frames, blit=True)
+        ani.save(output_dir / "volume_scan.mp4", writer='ffmpeg', fps=video_fps)
         plt.close(fig_vid)
-        return
-
-    # Use a fixed robust range across all frames so the colorbar is meaningful.
-    vid_vmin, vid_vmax = robust_range_from_data(vol_np_sample, p_low=1.0, p_high=99.0)
-    logger.info("Video colormap range (robust): vmin=%.6g vmax=%.6g", vid_vmin, vid_vmax)
-
-    # Initialize with the first selected slice
-    first_slice = vol[:, :, frames[0]].numpy().T
-    first_slice = _downsample_2d(first_slice, video_downsample)
-    im_display = ax_vid.imshow(first_slice, cmap='viridis', animated=True, vmin=vid_vmin, vmax=vid_vmax)
-    ax_vid.set_title(f"Z-Slice Video")
-    ax_vid.axis('off')
-    
-    # Add colorbar
-    fig_vid.colorbar(im_display, ax=ax_vid, fraction=0.046, pad=0.04, label='Intensity')
-
-    def update(frame):
-        # Frame is Z index
-        slice_data = vol[:, :, frame].numpy().T
-        slice_data = _downsample_2d(slice_data, video_downsample)
-        im_display.set_data(slice_data)
-        ax_vid.set_title(f"Z-Slice {frame}")
-        return [im_display]
-
-    logger.info(f"Video frames: {len(frames)} (nz={nz}, stride={stride}, downsample={video_downsample}x)")
-    ani = FuncAnimation(fig_vid, update, frames=frames, blit=True)
-    
-    # Try saving as mp4 (requires ffmpeg)
-    video_path = output_dir / "volume_scan.mp4"
-    ani.save(video_path, writer='ffmpeg', fps=video_fps)
-    logger.info(f"Saved video to {video_path}")
-
-    plt.close(fig_vid)
     
     logger.info("Visualization Complete.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("file_path", nargs='?', default=None, help="Path to the .h5 or .pt file (Optional if using raw dirs)")
+    parser.add_argument("file_paths", nargs='*', default=[], help="Path(s) to the .h5 or .pt file(s)")
     parser.add_argument(
         "--norm",
         choices=["percentile", "minmax"],
@@ -579,23 +564,27 @@ if __name__ == "__main__":
         default=10,
         help="Number of decades for log histogram buckets (e.g., 6 -> 1e-6..1)",
     )
+    parser.add_argument("--output_dir", help="Explicit output directory")
+    parser.add_argument("--y_limit", type=int, default=1000, help="Y-axis limit for histograms")
+    parser.add_argument("--x_min", type=float, help="X-axis minimum for histograms")
+    parser.add_argument("--x_max", type=float, help="X-axis maximum for histograms")
     
     # Raw Data Mode Arguments
-    parser.add_argument("--input-dir", default="data/raw/lightsheet_vol_6.9", help="Raw volume directory (e.g. data/raw/lightsheet_vol_6.9)")
-    parser.add_argument("--img-dir", default="data/raw/20um_imgs", help="Raw image directory (e.g. data/raw/20um_imgs)")
+    parser.add_argument("--input-dir", default=None, help="Raw volume directory")
+    parser.add_argument("--img-dir", default=None, help="Raw image directory")
     parser.add_argument("--downsampling-rate", type=float, default=0.5, help="Downsampling rate for raw mode")
     parser.add_argument("--scale-factor", type=float, default=8.0, help="Scale factor for raw mode")
 
     args = parser.parse_args()
     
-    # Logic: If raw dirs are provided, we use raw mode. file_path argument might be used to specify index (e.g. "pair_2")
-    raw_mode = (args.input_dir is not None and args.img_dir is not None)
+    raw_mode = (args.input_dir is not None and args.input_dir.lower() != "none" and 
+                args.img_dir is not None and args.img_dir.lower() != "none")
     
-    if not raw_mode and not Path(args.file_path).exists():
-        print(f"Error: File {args.file_path} does not exist and no raw directories provided.")
+    if not raw_mode and not args.file_paths:
+        print("Error: No files specified and no raw directories provided.")
     else:
         visualize(
-            args.file_path,
+            args.file_paths,
             args=args,
             norm_mode=args.norm,
             video_downsample=args.video_downsample,

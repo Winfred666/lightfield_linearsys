@@ -95,7 +95,7 @@ def convert_emd_to_pt(emd_path: Path, output_dir: Path) -> Path:
     # Unnormalize by multiplying with fixed value 255
     # Based on analysis of .tif images: 20um=255, 60um=255, 80um=239, 120um=255
     # Using 255 as conservative maximum for all cases
-    volume_tensor = volume_tensor * 255.0
+    # volume_tensor = volume_tensor * 255.0
     logger.info(f"Unnormalized reconstruction by multiplying with fixed value 255.0")
 
     # Save as .pt file with 'reconstruction' key
