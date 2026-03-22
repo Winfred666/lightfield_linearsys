@@ -274,7 +274,7 @@ def main() -> None:
     parser.add_argument(
         "--p99",
         type=float,
-        default=99.0,
+        default=100.0,
         help="Percentile for robust density vmax (consistent across videos)",
     )
     parser.add_argument(

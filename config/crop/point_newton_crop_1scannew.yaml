@@ -1,17 +1,16 @@
 data:
-  points_dir: "data/points/crop_120um/ds1p0"
-
+  points_dir: "data/points/crop_1scannew/ds1p0"
     # WARNING: when visualizing, still need processed data.
-  raw_A_dir: "data/raw/lightsheet_vol_6.9"
-  raw_b_dir: "data/raw/120um_imgs"
+  raw_A_dir: "data/raw/interp_512_189-218"
+  raw_b_dir: "data/raw/1scan_cropped"
   downsampling_rate: 1.0
   scale_factor: 8.0
   
-  crop_box_b: [1140, 830, 1652, 1342]
-  crop_box_A: [5, 268, 18, 69, 332, 82]
+  crop_box_b: [0, 0, 512, 512]
+  crop_box_A: [5, 268, 0, 69, 332, 64]
 
 
-  output_dir: "result/solve_point/newton_crop_120um_1p0"
+  output_dir: "result/solve_point/newton_crop_1scannew_1p0"
   batch_pattern: "points_batch_*.pt"
   threshold_A: 0.5
   threshold_b: null
